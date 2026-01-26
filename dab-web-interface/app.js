@@ -1,428 +1,406 @@
-'use strict';
+#!/usr/bin/env node
+/*
+  uGreen DAB Web Interface (Node.js 18+)
 
-const path = require('path');
-const fs = require('fs');
-const http = require('http');
-const express = require('express');
-const { spawn } = require('child_process');
-const { Server } = require('socket.io');
+  Wraps vendor "radio_cli" binary.
 
-// ===========================
-// Configuration (env + défaut)
-// ===========================
-const PORT = parseInt(process.env.PORT || '9595', 10);
+  Constraints:
+  - radio_cli must be executed as root (hardware access).
+  - Options are those from: sudo radio_cli --help
 
-// Le binaire réellement exécutable (souvent /usr/local/sbin/radio_cli -> symlink)
-const RADIO_CLI_PATH = process.env.RADIO_CLI_PATH || '/usr/local/sbin/radio_cli';
+  Socket events:
+    client -> server:
+      boot
+      tune { frequencyIndex }
+      fullScan
+      listServices
+      selectService { serviceId, componentId? }
+      getStationText { waitTimeSeconds? }
 
-// radio_cli exige root -> on passe par sudo (recommandé) plutôt que faire tourner Node en root
-const USE_SUDO = (process.env.USE_SUDO || '1') === '1';
-const SUDO_PATH = process.env.SUDO_PATH || '/usr/bin/sudo';
+    server -> client:
+      status { ok, message, detail? }
+      blockResult { scan: ... }      (full_scan.json content)
+      ensembleInfo { ... }           (best-effort)
+      services { services: ... }     (best-effort)
+      serviceSelected { ... }
+      stationText { text }
+      error { message, detail? }
+*/
 
-// timeout pour ne pas rester bloqué
-const RADIO_TIMEOUT_MS = parseInt(process.env.RADIO_TIMEOUT_MS || '30000', 10);
+"use strict";
 
-// log
-const LOG_PATH = process.env.LOG_PATH || '/var/log/dab-web-interface/radio.log';
+const fs = require("fs");
+const path = require("path");
+const http = require("http");
+const express = require("express");
+const { Server } = require("socket.io");
+const { spawn } = require("child_process");
 
-// anti-spam en cas d’erreur répétée
-const ERROR_BACKOFF_MS = parseInt(process.env.ERROR_BACKOFF_MS || '2000', 10);
+// -----------------------------
+// Configuration
+// -----------------------------
 
-// ===========================
-// Options radio_cli (selon ton --help)
-// ===========================
-const RADIO_CLI_OPTIONS = {
-  boot: ['-b', 'D'],        // DAB firmware
-  frequency: '-f',          // index numérique (pas "9A")
-  listServices: '-g',       // digital_service_list (JSON uniquement avec -j)
-  serviceId: '-e',
-  componentId: '-c',
-  play: '-p',
-  volume: '-l',
-  stationText: '-D',
-  ensembleInfo: '-G',
-  jsonFlag: '-j',
-  waitTime: '-z',
-  shutdown: '-k',
-};
+const RADIO_CLI_PATH = process.env.RADIO_CLI_PATH || "/usr/local/sbin/radio_cli";
 
-// ===========================
-// DAB Block -> index (Band III EU)
-// ===========================
-const DAB_BLOCKS = [
-  '5A','5B','5C','5D',
-  '6A','6B','6C','6D',
-  '7A','7B','7C','7D',
-  '8A','8B','8C','8D',
-  '9A','9B','9C','9D',
-  '10A','10B','10C','10D',
-  '11A','11B','11C','11D',
-  '12A','12B','12C','12D',
-  '13A','13B','13C','13D','13E','13F'
-];
+// Timeouts
+const RADIO_CLI_TIMEOUT_MS = Number(process.env.RADIO_CLI_TIMEOUT_MS || 30_000);
+const RADIO_CLI_FULLSCAN_TIMEOUT_MS = Number(
+  process.env.RADIO_CLI_FULLSCAN_TIMEOUT_MS || 180_000
+);
 
-function blockToIndex(block) {
-  if (!block || typeof block !== 'string') return null;
-  const b = block.trim().toUpperCase();
-  const idx = DAB_BLOCKS.indexOf(b);
-  return idx >= 0 ? idx : null;
+// Web server
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
+
+// Logging / data
+const LOG_DIR = process.env.LOG_DIR || "/var/log/dab-web-interface";
+const LOG_PATH = process.env.LOG_PATH || path.join(LOG_DIR, "radio.log");
+const DATA_DIR = process.env.DATA_DIR || "/var/lib/dab-web-interface";
+
+// -----------------------------
+// Helpers
+// -----------------------------
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
 }
 
-function safeInt(value, { min, max } = { min: 0, max: Number.MAX_SAFE_INTEGER }) {
-  // accepte string/number, rejette NaN, flottants, etc.
-  const n = Number(value);
-  if (!Number.isInteger(n)) return null;
-  if (n < min || n > max) return null;
-  return n;
+function nowIso() {
+  return new Date().toISOString();
 }
 
-// ===========================
-// Logging robuste
-// ===========================
-function ensureLogFileWritable(logPath) {
+function appendLog(line) {
   try {
-    const dir = path.dirname(logPath);
-    fs.mkdirSync(dir, { recursive: true });
-    // Touch
-    fs.appendFileSync(logPath, '');
-    return logPath;
+    ensureDir(path.dirname(LOG_PATH));
+    fs.appendFileSync(LOG_PATH, line + "\n", { encoding: "utf8" });
   } catch (e) {
-    // fallback /tmp si permissions foireuses
-    const fallback = '/tmp/dab-web-radio.log';
-    try {
-      fs.appendFileSync(fallback, '');
-      return fallback;
-    } catch {
-      return null;
-    }
+    // logging should never kill the server
+    console.error("LOG ERROR:", e?.message || e);
   }
-}
-
-const EFFECTIVE_LOG_PATH = ensureLogFileWritable(LOG_PATH);
-
-function logLine(line) {
-  const ts = new Date().toISOString();
-  const msg = `[${ts}] ${line}\n`;
-  if (EFFECTIVE_LOG_PATH) {
-    try { fs.appendFileSync(EFFECTIVE_LOG_PATH, msg); } catch {}
-  }
-  process.stdout.write(msg);
 }
 
 function logCmd(cmd, args) {
-  logLine(`CMD: ${cmd} ${args.join(' ')}`);
+  appendLog(`[${nowIso()}] CMD: ${cmd} ${args.join(" ")}`);
 }
 
-// ===========================
-// Exécution radio_cli avec timeout + capture
-// ===========================
-function buildRadioCommandArgs(args) {
-  // args = options radio_cli
-  if (!USE_SUDO) {
-    return { cmd: RADIO_CLI_PATH, finalArgs: args };
+function logOut(out) {
+  const text = String(out || "").trimEnd();
+  if (!text) return;
+  for (const line of text.split("\n")) {
+    appendLog(`[${nowIso()}] OUT: ${line}`);
   }
-  return { cmd: SUDO_PATH, finalArgs: [RADIO_CLI_PATH, ...args] };
 }
 
-function runRadioCli(args, { timeoutMs = RADIO_TIMEOUT_MS } = {}) {
+function logErr(err) {
+  const text = String(err || "").trimEnd();
+  if (!text) return;
+  for (const line of text.split("\n")) {
+    appendLog(`[${nowIso()}] ERR: ${line}`);
+  }
+}
+
+function isRoot() {
+  return typeof process.getuid === "function" && process.getuid() === 0;
+}
+
+function parseIntStrict(value, name) {
+  if (value === undefined || value === null) throw new Error(`${name} is required`);
+  const s = String(value).trim();
+  if (!/^\d+$/.test(s)) throw new Error(`${name} must be an integer`);
+  const n = Number(s);
+  if (!Number.isSafeInteger(n)) throw new Error(`${name} is invalid`);
+  return n;
+}
+
+function parseFrequencyIndex(value) {
+  const n = parseIntStrict(value, "frequencyIndex");
+  if (n < 0 || n > 200) throw new Error("frequencyIndex out of range");
+  return n;
+}
+
+function parseServiceId(value) {
+  const n = parseIntStrict(value, "serviceId");
+  if (n < 0 || n > 999999) throw new Error("serviceId out of range");
+  return n;
+}
+
+function parseComponentId(value) {
+  if (value === undefined || value === null || value === "") return 0;
+  const n = parseIntStrict(value, "componentId");
+  if (n < 0 || n > 9999) throw new Error("componentId out of range");
+  return n;
+}
+
+function parseWaitTimeSeconds(value) {
+  if (value === undefined || value === null) return 1;
+  const n = parseIntStrict(value, "waitTimeSeconds");
+  if (n < 0 || n > 30) throw new Error("waitTimeSeconds must be between 0 and 30");
+  return n;
+}
+
+function safeJsonParse(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function parseMultiJson(stdout) {
+  const out = String(stdout || "").trim();
+  if (!out) return [];
+  const lines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+  const objs = [];
+  for (const line of lines) {
+    const obj = safeJsonParse(line);
+    if (obj) objs.push(obj);
+  }
+  return objs;
+}
+
+/**
+ * Runs radio_cli with timeout.
+ * Returns { stdout, stderr, code }.
+ */
+function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } = {}) {
   return new Promise((resolve, reject) => {
-    const { cmd, finalArgs } = buildRadioCommandArgs(args);
-    logCmd(cmd, finalArgs);
+    if (!isRoot()) {
+      return reject(
+        new Error(
+          "radio_cli must be called as root. Run dab-webserver.service as root (User=root)."
+        )
+      );
+    }
 
-    const child = spawn(cmd, finalArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    ensureDir(cwd);
+    logCmd(RADIO_CLI_PATH, args);
 
-    let stdout = '';
-    let stderr = '';
-    let finished = false;
+    let stdout = "";
+    let stderr = "";
+
+    const child = spawn(RADIO_CLI_PATH, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     const timer = setTimeout(() => {
-      if (finished) return;
-      finished = true;
-      try { child.kill('SIGKILL'); } catch {}
-      const err = new Error(`radio_cli timeout after ${timeoutMs}ms`);
-      err.code = 'TIMEOUT';
+      try { child.kill("SIGKILL"); } catch {}
+      const err = new Error(`radio_cli timeout after ${Math.round(timeoutMs / 1000)}s`);
+      err.code = "ETIMEDOUT";
+      logErr(err.message);
       reject(err);
     }, timeoutMs);
 
-    child.on('error', (err) => {
-      if (finished) return;
-      finished = true;
+    child.on("error", (err) => {
       clearTimeout(timer);
-      const e = new Error(`Failed to spawn radio_cli: ${err.message}`);
-      e.code = err.code || 'SPAWN_ERROR';
-      reject(e);
+      const msg = `Failed to spawn radio_cli: ${err?.message || err}`;
+      logErr(msg);
+      reject(new Error(msg));
     });
 
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.stdout.on("data", (buf) => (stdout += buf.toString("utf8")));
+    child.stderr.on("data", (buf) => (stderr += buf.toString("utf8")));
 
-    child.on('close', (code) => {
-      if (finished) return;
-      finished = true;
+    child.on("close", (code) => {
       clearTimeout(timer);
-
-      if (stdout.trim()) logLine(`OUT: ${stdout.trim()}`);
-      if (stderr.trim()) logLine(`ERR: ${stderr.trim()}`);
-
-      resolve({ code, stdout, stderr });
+      logOut(stdout);
+      logErr(stderr);
+      resolve({ stdout, stderr, code });
     });
   });
 }
 
-// radio_cli sort parfois du JSON "par morceaux" (ou des lignes)
-// -> parse permissif: tente parse complet, sinon tente dernière ligne JSON
-function parseJsonLoose(text) {
-  const t = (text || '').trim();
-  if (!t) return null;
+// -----------------------------
+// radio_cli actions (real flags)
+// -----------------------------
 
-  try { return JSON.parse(t); } catch {}
+async function bootDab() {
+  // -b D + -j
+  await runRadioCli(["-b", "D", "-j"]);
+}
 
-  // Essayons de trouver la dernière "ligne" JSON
-  const lines = t.split('\n').map(l => l.trim()).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (line.startsWith('{') || line.startsWith('[')) {
-      try { return JSON.parse(line); } catch {}
-    }
+async function tuneFrequencyIndex(frequencyIndex) {
+  const idx = parseFrequencyIndex(frequencyIndex);
+  // -f <index> + -j
+  return runRadioCli(["-f", String(idx), "-j"]);
+}
+
+async function getEnsembleInfo() {
+  // -G + -j
+  const res = await runRadioCli(["-G", "-j"]);
+  const trimmed = String(res.stdout || "").trim();
+  if (!trimmed) return { raw: "" };
+
+  // some versions output a JSON line, others multiple
+  const one = safeJsonParse(trimmed);
+  if (one) return one;
+
+  const many = parseMultiJson(res.stdout);
+  return many.length ? many[many.length - 1] : { raw: trimmed };
+}
+
+async function listServices() {
+  // IMPORTANT: correct option is -g (digital_service_list), not --list-services
+  const res = await runRadioCli(["-g", "-j"]);
+  const trimmed = String(res.stdout || "").trim();
+  if (!trimmed) return { services: [], raw: "" };
+
+  // sometimes it's one big JSON, sometimes multiple lines
+  const one = safeJsonParse(trimmed);
+  if (one) return { services: one };
+
+  const many = parseMultiJson(res.stdout);
+  return { services: many.length ? many : [], raw: trimmed };
+}
+
+async function selectService(serviceId, componentId = 0) {
+  const sid = parseServiceId(serviceId);
+  const cid = parseComponentId(componentId);
+
+  // -e <service> -c <component> -p  (+ -j doesn't hurt)
+  return runRadioCli(["-e", String(sid), "-c", String(cid), "-p", "-j"]);
+}
+
+async function getStationText(waitTimeSeconds = 1) {
+  const wt = parseWaitTimeSeconds(waitTimeSeconds);
+  // -D -z <wait>
+  const res = await runRadioCli(["-D", "-z", String(wt)], {
+    timeoutMs: RADIO_CLI_TIMEOUT_MS + wt * 1000,
+  });
+  return { text: String(res.stdout || "").trim() };
+}
+
+async function fullScan() {
+  // -u saves full_scan.json in cwd. We'll run it in DATA_DIR.
+  await runRadioCli(["-b", "D", "-u", "-j"], {
+    timeoutMs: RADIO_CLI_FULLSCAN_TIMEOUT_MS,
+    cwd: DATA_DIR,
+  });
+
+  const scanFile = path.join(DATA_DIR, "full_scan.json");
+  if (!fs.existsSync(scanFile)) {
+    throw new Error(`full_scan.json not found after scan (expected at ${scanFile})`);
   }
-  return null;
+
+  const data = fs.readFileSync(scanFile, "utf8");
+  const parsed = safeJsonParse(data);
+  return parsed || { raw: data };
 }
 
-// ===========================
-// État minimal
-// ===========================
-let lastFrequencyIndex = null;
-let lastErrorAt = 0;
+// -----------------------------
+// Server
+// -----------------------------
 
-// anti-boucle spam en cas d’échec constant
-function inBackoff() {
-  const now = Date.now();
-  return (now - lastErrorAt) < ERROR_BACKOFF_MS;
-}
+ensureDir(LOG_DIR);
+ensureDir(DATA_DIR);
 
-function markError() {
-  lastErrorAt = Date.now();
-}
-
-// ===========================
-// Serveur web + Socket.IO
-// ===========================
 const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
-app.get('/health', (_req, res) => {
+app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    port: PORT,
+    root: isRoot(),
     radioCliPath: RADIO_CLI_PATH,
-    useSudo: USE_SUDO,
-    logPath: EFFECTIVE_LOG_PATH,
-    lastFrequencyIndex
+    time: nowIso(),
   });
 });
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { cors: { origin: "*" } });
 
-io.on('connection', (socket) => {
-  logLine('Client connected');
-
-  socket.emit('serverInfo', {
-    port: PORT,
-    useSudo: USE_SUDO,
-    radioCliPath: RADIO_CLI_PATH,
-    logPath: EFFECTIVE_LOG_PATH
+io.on("connection", (socket) => {
+  socket.emit("status", {
+    ok: true,
+    message: "Connected",
+    detail: {
+      root: isRoot(),
+      radioCliPath: RADIO_CLI_PATH,
+      time: nowIso(),
+    },
   });
 
-  // Boot DAB firmware (optionnel: tu peux le faire au moment du scan aussi)
-  socket.on('boot', async () => {
-    if (inBackoff()) {
-      socket.emit('errorMsg', 'Backoff actif (trop d’erreurs récentes).');
-      return;
-    }
+  const sendError = (err) => {
+    const msg = err?.message || String(err);
+    socket.emit("error", { message: msg });
+    logErr(msg);
+  };
+
+  socket.on("boot", async () => {
     try {
-      await runRadioCli([RADIO_CLI_OPTIONS.boot[0], RADIO_CLI_OPTIONS.boot[1], RADIO_CLI_OPTIONS.jsonFlag]);
-      socket.emit('booted', { ok: true });
-    } catch (e) {
-      markError();
-      socket.emit('booted', { ok: false, error: e.message, code: e.code });
+      await bootDab();
+      socket.emit("status", { ok: true, message: "Boot OK" });
+    } catch (err) {
+      sendError(err);
     }
   });
 
-  // scanBlock: reçoit "9A" -> index -> boot+tune+list services JSON
-  socket.on('scanBlock', async (payload) => {
-    if (inBackoff()) {
-      socket.emit('blockResult', { ok: false, error: 'Backoff actif (trop d’erreurs récentes).' });
-      return;
-    }
-
-    const block = payload?.block;
-    const idx = blockToIndex(block);
-
-    if (idx === null) {
-      socket.emit('blockResult', { ok: false, error: `Block invalide: ${block}` });
-      return;
-    }
-
-    lastFrequencyIndex = idx;
-
+  socket.on("tune", async (payload) => {
     try {
-      // Commandes combinées: boot DAB + tune index + print service list JSON
-      const args = [
-        RADIO_CLI_OPTIONS.boot[0], RADIO_CLI_OPTIONS.boot[1],
-        RADIO_CLI_OPTIONS.frequency, String(idx),
-        RADIO_CLI_OPTIONS.listServices,
-        RADIO_CLI_OPTIONS.jsonFlag
-      ];
+      const idx = parseFrequencyIndex(payload?.frequencyIndex);
+      await tuneFrequencyIndex(idx);
 
-      const { stdout, code, stderr } = await runRadioCli(args);
+      // optional info
+      const info = await getEnsembleInfo().catch(() => null);
+      if (info) socket.emit("ensembleInfo", info);
 
-      const json = parseJsonLoose(stdout);
-      socket.emit('blockResult', {
-        ok: code === 0,
-        block: block.toUpperCase(),
-        frequencyIndex: idx,
-        raw: stdout,
-        parsed: json,
-        stderr: stderr || ''
-      });
-
-      // si JSON service list détecté, on le forward direct
-      if (json) socket.emit('servicesList', json);
-    } catch (e) {
-      markError();
-      socket.emit('blockResult', { ok: false, error: e.message, code: e.code });
+      socket.emit("status", { ok: true, message: `Tuned to frequency index ${idx}` });
+    } catch (err) {
+      sendError(err);
     }
   });
 
-  // selectService: nécessite serviceId + componentId (et un block ou index)
-  socket.on('selectService', async (payload) => {
-    if (inBackoff()) {
-      socket.emit('serviceSelected', { ok: false, error: 'Backoff actif (trop d’erreurs récentes).' });
-      return;
-    }
-
-    // sécurité: ints only
-    const serviceId = safeInt(payload?.serviceId, { min: 0, max: 999999 });
-    const componentId = safeInt(payload?.componentId, { min: 0, max: 999999 });
-
-    if (serviceId === null || componentId === null) {
-      socket.emit('serviceSelected', { ok: false, error: 'serviceId/componentId invalides (entiers requis).' });
-      return;
-    }
-
-    let idx = null;
-
-    if (payload?.frequencyIndex !== undefined && payload?.frequencyIndex !== null) {
-      idx = safeInt(payload.frequencyIndex, { min: 0, max: DAB_BLOCKS.length - 1 });
-    } else if (payload?.block) {
-      idx = blockToIndex(payload.block);
-    } else if (lastFrequencyIndex !== null) {
-      idx = lastFrequencyIndex;
-    }
-
-    if (idx === null) {
-      socket.emit('serviceSelected', { ok: false, error: 'Aucune fréquence/index fourni (scanBlock avant).' });
-      return;
-    }
-
-    lastFrequencyIndex = idx;
-
+  socket.on("fullScan", async () => {
     try {
-      // Pour jouer: -f idx -e service -c component -p
-      // (boot non obligatoire si déjà booté, mais on peut le mettre au besoin)
-      const args = [
-        RADIO_CLI_OPTIONS.frequency, String(idx),
-        RADIO_CLI_OPTIONS.serviceId, String(serviceId),
-        RADIO_CLI_OPTIONS.componentId, String(componentId),
-        RADIO_CLI_OPTIONS.play
-      ];
-
-      const { code, stdout, stderr } = await runRadioCli(args);
-
-      socket.emit('serviceSelected', {
-        ok: code === 0,
-        frequencyIndex: idx,
-        serviceId,
-        componentId,
-        raw: stdout,
-        stderr: stderr || ''
-      });
-    } catch (e) {
-      markError();
-      socket.emit('serviceSelected', { ok: false, error: e.message, code: e.code });
+      socket.emit("status", { ok: true, message: "Full scan started… (can take a while)" });
+      const scan = await fullScan();
+      socket.emit("blockResult", { scan });
+      socket.emit("status", { ok: true, message: "Full scan finished" });
+    } catch (err) {
+      sendError(err);
     }
   });
 
-  // getMetadata: station text (non JSON)
-  socket.on('getMetadata', async (payload) => {
-    if (inBackoff()) {
-      socket.emit('metadata', { ok: false, error: 'Backoff actif (trop d’erreurs récentes).' });
-      return;
-    }
-
-    const wait = safeInt(payload?.waitTime, { min: 1, max: 10 }) ?? 2;
-
+  socket.on("listServices", async () => {
     try {
-      const args = [
-        RADIO_CLI_OPTIONS.stationText,
-        RADIO_CLI_OPTIONS.waitTime, String(wait)
-      ];
-      const { code, stdout, stderr } = await runRadioCli(args, { timeoutMs: RADIO_TIMEOUT_MS });
-
-      socket.emit('metadata', {
-        ok: code === 0,
-        waitTime: wait,
-        text: (stdout || '').trim(),
-        stderr: (stderr || '').trim()
-      });
-    } catch (e) {
-      markError();
-      socket.emit('metadata', { ok: false, error: e.message, code: e.code });
+      const result = await listServices();
+      socket.emit("services", result);
+    } catch (err) {
+      sendError(err);
     }
   });
 
-  // volume
-  socket.on('setVolume', async (payload) => {
-    if (inBackoff()) {
-      socket.emit('volumeSet', { ok: false, error: 'Backoff actif (trop d’erreurs récentes).' });
-      return;
-    }
-    const level = safeInt(payload?.level, { min: 0, max: 63 });
-    if (level === null) {
-      socket.emit('volumeSet', { ok: false, error: 'Volume invalide (0..63).' });
-      return;
-    }
+  socket.on("selectService", async (payload) => {
     try {
-      const args = [RADIO_CLI_OPTIONS.volume, String(level)];
-      const { code, stdout, stderr } = await runRadioCli(args);
-      socket.emit('volumeSet', { ok: code === 0, level, raw: stdout, stderr: stderr || '' });
-    } catch (e) {
-      markError();
-      socket.emit('volumeSet', { ok: false, error: e.message, code: e.code });
+      const serviceId = parseServiceId(payload?.serviceId);
+      const componentId = parseComponentId(payload?.componentId);
+      await selectService(serviceId, componentId);
+      socket.emit("serviceSelected", { serviceId, componentId });
+    } catch (err) {
+      sendError(err);
     }
   });
 
-  // shutdown chip
-  socket.on('shutdown', async () => {
-    if (inBackoff()) {
-      socket.emit('shutdownResult', { ok: false, error: 'Backoff actif (trop d’erreurs récentes).' });
-      return;
-    }
+  socket.on("getStationText", async (payload) => {
     try {
-      const { code, stdout, stderr } = await runRadioCli([RADIO_CLI_OPTIONS.shutdown]);
-      socket.emit('shutdownResult', { ok: code === 0, raw: stdout, stderr: stderr || '' });
-    } catch (e) {
-      markError();
-      socket.emit('shutdownResult', { ok: false, error: e.message, code: e.code });
+      const wt = parseWaitTimeSeconds(payload?.waitTimeSeconds);
+      const text = await getStationText(wt);
+      socket.emit("stationText", text);
+    } catch (err) {
+      sendError(err);
     }
-  });
-
-  socket.on('disconnect', () => {
-    logLine('Client disconnected');
   });
 });
 
-server.listen(PORT, () => {
-  logLine(`uGreen DAB web interface listening on port ${PORT}`);
+server.listen(PORT, HOST, () => {
+  appendLog(`[${nowIso()}] Server listening on http://${HOST}:${PORT}`);
+  console.log(`Server listening on http://${HOST}:${PORT}`);
 });
+
+// Clean shutdown
+function shutdown() {
+  server.close(() => process.exit(0));
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
