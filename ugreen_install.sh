@@ -161,7 +161,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=$APP_DIR
-Environment=PORT=3000
+Environment=PORT=9595
 Environment=HOST=0.0.0.0
 Environment=RADIO_CLI_PATH=$SBIN_LINK
 Environment=LOG_DIR=$LOG_DIR
