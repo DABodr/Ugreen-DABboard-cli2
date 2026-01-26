@@ -28,9 +28,16 @@ SERVICE_NAME="dab-webserver"
 
 download_ugreen() {
   echo "Downloading uGreen DAB software from $FILES_URL…"
-  wget -O "/tmp/$FILES_NAME" "$FILES_URL"
+  # Use wget with error handling; abort if download fails
+  if ! wget -O "/tmp/$FILES_NAME" "$FILES_URL"; then
+    echo "Error: failed to download uGreen files from $FILES_URL" >&2
+    exit 1
+  fi
   echo "Extracting…"
-  unzip -o "/tmp/$FILES_NAME" -d /usr/local/lib
+  if ! unzip -o "/tmp/$FILES_NAME" -d /usr/local/lib; then
+    echo "Error: failed to extract /tmp/$FILES_NAME" >&2
+    exit 1
+  fi
   # After extraction, uGreen’s archive may unpack as DABBoard/ instead of Files_v12.
   # Detect the extracted directory name.  If multiple directories are present
   # (e.g. during an update), prefer the one containing radio_cli.
@@ -58,6 +65,13 @@ download_ugreen() {
     rm -rf "$INSTALL_DIR"
   fi
   mv -f "$extracted_dir" "$INSTALL_DIR"
+
+  # Ensure the binaries are executable for all users.  Sometimes the
+  # extracted files may lack executable bits, which would cause
+  # permission errors when spawned by non‑root processes (EACCES).  Set
+  # read and execute permissions for owner, group and others.
+  chmod a+rx "$INSTALL_DIR"/radio_cli* || true
+  chmod a+rx "$INSTALL_DIR"/DABBoardRadio* || true
 
   # The uGreen archive contains multiple versions of the binaries for
   # different CPU architectures (e.g. 32‑bit arm, 64‑bit arm, x86_64).
@@ -110,6 +124,13 @@ download_ugreen() {
     ln -sf "$INSTALL_DIR"/DABBoardRadio* "$DAB_RADIO_SYMLINK"
   fi
   echo "uGreen binaries installed in $INSTALL_DIR (architecture: $arch)"
+
+  # Verify radio_cli is executable and functional.  If it fails to run
+  # the script will emit a warning.  Do not exit on failure because
+  # some versions of radio_cli may require additional configuration.
+  if ! "$RADIO_CLI_SYMLINK" --help >/dev/null 2>&1; then
+    echo "Warning: radio_cli does not seem to work correctly (unable to run --help)" >&2
+  fi
 }
 
 install_deps() {
@@ -195,5 +216,5 @@ install_node
 deploy_web_interface
 create_service
 
-echo "\nInstallation complete.  The web interface should now be accessible at http://$(hostname -I | awk '{print $1}'):${WEB_PORT}/"
+echo -e "\nInstallation complete.  The web interface should now be accessible at http://$(hostname -I | awk '{print $1}'):${WEB_PORT}/"
 echo "Reboot your system to ensure group permissions take effect."
