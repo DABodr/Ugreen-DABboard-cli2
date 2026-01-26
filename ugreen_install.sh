@@ -1,236 +1,181 @@
-#!/bin/bash
-#
-# ugreen_install.sh – automated setup for the uGreen DAB board and web interface
-#
-# This script automates the installation of the proprietary uGreen DAB
-# software alongside the Node.js based web interface provided in this
-# repository.  It must be run with root privileges on a Debian/Raspbian
-# system such as Raspberry Pi OS.  The procedure below is largely based
-# on the commands published in uGreen’s FAQ, which instructs users to
-# download the Files_v12 archive, extract it to /usr/local/lib and
-# create symlinks to radio_cli and DABBoardRadio【713877084488398†L108-L116】.  Additional steps have been
-# added to install dependencies such as wiringPi and libncurses5, set
-# up Node.js, copy the web interface and register it as a service on
-# port 9595.  You can customise the variables near the top of this
-# script to suit a different version or architecture.
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+# uGreen DABBoard installer (Files_v16+ aware)
+# - Installs uGreen CLI tools under /usr/local/lib/ugreen-dab+
+# - Creates symlinks in /usr/local/sbin (radio_cli, DABBoardRadio, get_station_text)
+# - Picks the correct binary for your OS (32-bit vs 64-bit) on Raspberry Pi OS / Debian
 
-# Variables (edit these if new versions become available)
-FILES_URL="https://ugreen.eu/wp-content/uploads/files/Files_v12.zip"
-FILES_NAME="Files_v12.zip"
-INSTALL_DIR="/usr/local/lib/ugreen-dab+"
-RADIO_CLI_SYMLINK="/usr/local/sbin/radio_cli"
-DAB_RADIO_SYMLINK="/usr/local/sbin/DABBoardRadio"
-WEB_PORT=9595
-WEB_ROOT="/opt/dab-web-interface"
-SERVICE_NAME="dab-webserver"
+# You can override these:
+UGREEN_ZIP_URL="${UGREEN_ZIP_URL:-https://ugreen.eu/wp-content/uploads/files/Files_v16.zip}"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/ugreen-dab+}"
+SBIN_DIR="${SBIN_DIR:-/usr/local/sbin}"
+TMP_ZIP="${TMP_ZIP:-/tmp/ugreen_files.zip}"
+TMP_DIR="${TMP_DIR:-/tmp/ugreen_extract}"
+RADIO_CLI_SYMLINK="${RADIO_CLI_SYMLINK:-$SBIN_DIR/radio_cli}"
+DABBOARD_SYMLINK="${DABBOARD_SYMLINK:-$SBIN_DIR/DABBoardRadio}"
+GET_STATION_SYMLINK="${GET_STATION_SYMLINK:-$SBIN_DIR/get_station_text}"
 
-download_ugreen() {
-  echo "Downloading uGreen DAB software from $FILES_URL…"
-  # Use wget with error handling; abort if download fails
-  if ! wget -O "/tmp/$FILES_NAME" "$FILES_URL"; then
-    echo "Error: failed to download uGreen files from $FILES_URL" >&2
-    exit 1
-  fi
-  echo "Extracting…"
-  if ! unzip -o "/tmp/$FILES_NAME" -d /usr/local/lib; then
-    echo "Error: failed to extract /tmp/$FILES_NAME" >&2
-    exit 1
-  fi
-  # After extraction, uGreen’s archive may unpack as DABBoard/ instead of Files_v12.
-  # Detect the extracted directory name.  If multiple directories are present
-  # (e.g. during an update), prefer the one containing radio_cli.
-  extracted_dir=""
-  if [ -d "/usr/local/lib/DABBoard" ]; then
-    extracted_dir="/usr/local/lib/DABBoard"
-  elif [ -d "/usr/local/lib/${FILES_NAME%.zip}" ]; then
-    extracted_dir="/usr/local/lib/${FILES_NAME%.zip}"
-  else
-    # Fallback: choose the first directory containing radio_cli
-    for d in /usr/local/lib/*; do
-      if [ -d "$d" ] && compgen -G "$d/radio_cli*" >/dev/null; then
-        extracted_dir="$d"
-        break
-      fi
-    done
-  fi
-  if [ -z "$extracted_dir" ]; then
-    echo "Error: could not locate extracted uGreen directory after unzip." >&2
-    exit 1
-  fi
-  # Move or rename the extracted directory into the installation directory.  If
-  # INSTALL_DIR already exists, remove it first to avoid mixing versions.
-  if [ -d "$INSTALL_DIR" ]; then
-    rm -rf "$INSTALL_DIR"
-  fi
-  mv -f "$extracted_dir" "$INSTALL_DIR"
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1"; exit 1; }; }
 
-  # Ensure the binaries are executable for all users.  Sometimes the
-  # extracted files may lack executable bits, which would cause
-  # permission errors when spawned by non‑root processes (EACCES).  Set
-  # read and execute permissions for owner, group and others.
-  chmod a+rx "$INSTALL_DIR"/radio_cli* || true
-  chmod a+rx "$INSTALL_DIR"/DABBoardRadio* || true
+echo "==> Checking dependencies…"
+need_cmd wget
+need_cmd unzip
+need_cmd uname
+need_cmd getconf
+need_cmd file
+need_cmd install
 
-  # The uGreen archive contains multiple versions of the binaries for
-  # different CPU architectures (e.g. 32‑bit ARM, 64‑bit ARM, x86_64).
-  # Choose the correct binary for this system based on the output of
-  # `uname -m`.  If architecture‑specific binaries are not present
-  # (e.g. only a generic `radio_cli_v3.1.0` exists), fall back to the
-  # first match.  See the I2S documentation for details about
-  # selecting the appropriate version【487981551829083†L124-L136】.
-  arch="$(uname -m)"
-  radio_cli_bin=""
-  dab_radio_bin=""
-  # Build a list of candidate binaries by searching recursively within
-  # the installation directory.  Some versions of the uGreen archive
-  # organise binaries inside subdirectories (e.g. armhf/aarch64) rather
-  # than in the top level.  Use find to locate all potential radio_cli
-  # and DABBoardRadio executables and exclude Markdown files.
-  mapfile -t radio_candidates < <(find "$INSTALL_DIR" -type f -name 'radio_cli*' ! -name '*.md' 2>/dev/null)
-  mapfile -t dab_candidates < <(find "$INSTALL_DIR" -type f -name 'DABBoardRadio*' ! -name '*.md' 2>/dev/null)
-  # Function to select a binary from a list based on architecture patterns
-  select_binary() {
-    local arch_val="$1"; shift
-    local -n _candidates=$1; shift
-    local selected=""
-    for candidate in "${_candidates[@]}"; do
-      base="${candidate##*/}"
-      case "$arch_val:$base" in
-        *aarch64*:*aarch64*|*aarch64*:*64*|*aarch64*:*arm64*)
-          selected="$candidate"; break;;
-        *arm64*:*aarch64*|*arm64*:*64*|*arm64*:*arm64*)
-          selected="$candidate"; break;;
-        *armv7*:*armhf*|*armv7*:*32*|*armv7*:*armv7*|*armv7*:*armv6*|*armv7*:*arm*)
-          selected="$candidate"; break;;
-        *armv6*:*armhf*|*armv6*:*32*|*armv6*:*armv7*|*armv6*:*armv6*|*armv6*:*arm*)
-          selected="$candidate"; break;;
-        *armhf*:*armhf*|*armhf*:*32*|*armhf*:*armv7*|*armhf*:*armv6*|*armhf*:*arm*)
-          selected="$candidate"; break;;
-        *arm*:*armhf*|*arm*:*32*|*arm*:*armv7*|*arm*:*armv6*|*arm*:*arm*)
-          selected="$candidate"; break;;
-        *x86_64*:*x86_64*|*x86_64*:*64*)
-          selected="$candidate"; break;;
-      esac
-    done
-    # Fallback: pick the first candidate
-    if [ -z "$selected" ] && [ "${#_candidates[@]}" -gt 0 ]; then
-      selected="${_candidates[0]}"
-    fi
-    echo "$selected"
-  }
-  # Select the appropriate binary
-  radio_cli_bin=$(select_binary "$arch" radio_candidates)
-  dab_radio_bin=$(select_binary "$arch" dab_candidates)
-  # Create symlinks pointing to the selected binaries
-  if [ -n "$radio_cli_bin" ]; then
-    ln -sf "$radio_cli_bin" "$RADIO_CLI_SYMLINK"
-  else
-    echo "Warning: could not determine appropriate radio_cli binary; defaulting to first match." >&2
-    # Link to the first radio_cli file (non‑markdown) if present
-    candidate=$(ls "$INSTALL_DIR"/radio_cli* 2>/dev/null | grep -v ".md$" | head -n 1 || true)
-    [ -n "$candidate" ] && ln -sf "$candidate" "$RADIO_CLI_SYMLINK"
-  fi
-  if [ -n "$dab_radio_bin" ]; then
-    ln -sf "$dab_radio_bin" "$DAB_RADIO_SYMLINK"
-  else
-    echo "Warning: could not determine appropriate DABBoardRadio binary; defaulting to first match." >&2
-    candidate=$(ls "$INSTALL_DIR"/DABBoardRadio* 2>/dev/null | grep -v ".md$" | head -n 1 || true)
-    [ -n "$candidate" ] && ln -sf "$candidate" "$DAB_RADIO_SYMLINK"
-  fi
-  echo "uGreen binaries installed in $INSTALL_DIR (architecture: $arch)"
+BITS="$(getconf LONG_BIT || true)"
+ARCH="$(uname -m || true)"
+echo "==> Detected: ARCH=$ARCH, BITS=$BITS"
 
-  # Verify radio_cli is executable and functional.  If it fails to run
-  # the script will emit a warning.  Do not exit on failure because
-  # some versions of radio_cli may require additional configuration.
-  if ! "$RADIO_CLI_SYMLINK" --help >/dev/null 2>&1; then
-    echo "Warning: radio_cli does not seem to work correctly (unable to run --help)" >&2
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Please run as root (sudo)."
+  exit 1
+fi
+
+echo "==> Downloading uGreen DAB software from: $UGREEN_ZIP_URL"
+rm -f "$TMP_ZIP"
+if ! wget -O "$TMP_ZIP" "$UGREEN_ZIP_URL"; then
+  echo "Download failed (wget). Check your internet or URL."
+  exit 1
+fi
+
+echo "==> Extracting…"
+rm -rf "$TMP_DIR"
+mkdir -p "$TMP_DIR"
+if ! unzip -q "$TMP_ZIP" -d "$TMP_DIR"; then
+  echo "Unzip failed. The ZIP might be corrupted."
+  exit 1
+fi
+
+# Find the extracted root folder (Files_v16, Files_v12, etc.)
+EXTRACT_ROOT=""
+for d in "$TMP_DIR"/*; do
+  [[ -d "$d" ]] || continue
+  base="$(basename "$d")"
+  if [[ "$base" == Files_v* || "$base" == DABBoard* ]]; then
+    EXTRACT_ROOT="$d"
+    break
   fi
+done
+
+if [[ -z "$EXTRACT_ROOT" ]]; then
+  echo "Could not find extracted Files_v* folder in $TMP_DIR"
+  ls -la "$TMP_DIR" || true
+  exit 1
+fi
+
+echo "==> Found extracted root: $EXTRACT_ROOT"
+
+# Install files (keep a clean target)
+mkdir -p "$INSTALL_DIR"
+rm -rf "$INSTALL_DIR"/*
+cp -a "$EXTRACT_ROOT"/. "$INSTALL_DIR"/
+
+# Helper: pick correct bin folder if present (Files_v16+ layout)
+BIN_BASE=""
+if [[ -d "$INSTALL_DIR/bin" ]]; then
+  if [[ "$BITS" == "64" && -d "$INSTALL_DIR/bin/64-bit" ]]; then
+    BIN_BASE="$INSTALL_DIR/bin/64-bit"
+  elif [[ "$BITS" == "32" && -d "$INSTALL_DIR/bin/32-bit" ]]; then
+    BIN_BASE="$INSTALL_DIR/bin/32-bit"
+  fi
+fi
+
+# Fallback: old layout (Files_v12 etc.) where executables are in root
+if [[ -z "$BIN_BASE" ]]; then
+  BIN_BASE="$INSTALL_DIR"
+fi
+
+echo "==> Using binaries from: $BIN_BASE"
+
+pick_latest() {
+  # $1 = glob pattern
+  # prints best candidate path or empty
+  local pattern="$1"
+  local best=""
+  shopt -s nullglob
+  local matches=( $pattern )
+  shopt -u nullglob
+  if (( ${#matches[@]} == 0 )); then
+    echo ""
+    return 0
+  fi
+  # sort by version-ish (vX.Y.Z) then take last
+  best="$(printf "%s\n" "${matches[@]}" | sort -V | tail -n 1)"
+  echo "$best"
 }
 
-install_deps() {
-  echo "Updating package lists and installing dependencies…"
-  apt-get update
-  apt-get install -y libncurses5 git unzip curl
-  # arecord/aplay are provided by alsa-utils (for audio monitoring)
-  apt-get install -y alsa-utils
-  # Install wiringPi if gpio command is absent (deprecated on recent systems)
-  if ! command -v gpio >/dev/null 2>&1; then
-    echo "Installing wiringPi library…"
-    git clone https://github.com/WiringPi/WiringPi /tmp/wiringPi
-    (cd /tmp/wiringPi && ./build)
-  fi
-  # Enable SPI and GPIO access for non‑root users by adding the current
-  # user to the appropriate groups; this allows the Node.js service to
-  # access /dev/spidev0.* and /dev/gpiomem without running as root.
-  if getent group spi >/dev/null; then
-    usermod -aG spi $(logname)
-  fi
-  if getent group gpio >/dev/null; then
-    usermod -aG gpio $(logname)
-  fi
-}
+RADIO_CLI_BIN="$(pick_latest "$BIN_BASE/radio_cli_v"* )"
+DABBOARD_BIN="$(pick_latest "$BIN_BASE/DABBoardRadio_v"* )"
 
-install_node() {
-  echo "Installing Node.js (via Nodesource)…"
-  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-  apt-get install -y nodejs
-}
+# Some zips might name without _v prefix; keep a safe fallback
+if [[ -z "$RADIO_CLI_BIN" ]]; then
+  RADIO_CLI_BIN="$(pick_latest "$BIN_BASE/radio_cli"* )"
+fi
+if [[ -z "$DABBOARD_BIN" ]]; then
+  DABBOARD_BIN="$(pick_latest "$BIN_BASE/DABBoardRadio"* )"
+fi
 
-deploy_web_interface() {
-  echo "Deploying web interface to $WEB_ROOT…"
-  mkdir -p "$WEB_ROOT"
-  # Copy the contents of the repository's dab-web-interface directory to
-  # the target location.  This assumes the script is executed from the
-  # root of the repository or that dab-web-interface exists relative to
-  # this script.
-  if [ -d dab-web-interface ]; then
-    cp -r dab-web-interface/* "$WEB_ROOT/"
-  else
-    echo "Error: dab-web-interface directory not found.  Run this script from the repository root."
-    exit 1
-  fi
-  cd "$WEB_ROOT"
-  npm install --production
-}
+# get_station_text is usually a script at root
+GET_STATION_SRC=""
+if [[ -f "$INSTALL_DIR/get_station_text.sh" ]]; then
+  GET_STATION_SRC="$INSTALL_DIR/get_station_text.sh"
+elif [[ -f "$BIN_BASE/get_station_text.sh" ]]; then
+  GET_STATION_SRC="$BIN_BASE/get_station_text.sh"
+fi
 
-create_service() {
-  echo "Creating systemd service for web interface…"
-  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
-[Unit]
-Description=uGreen DAB Web Interface
-After=network.target
+echo "==> Selected:"
+echo "   radio_cli:     ${RADIO_CLI_BIN:-<not found>}"
+echo "   DABBoardRadio: ${DABBOARD_BIN:-<not found>}"
+echo "   get_station:   ${GET_STATION_SRC:-<not found>}"
 
-[Service]
-Environment=PORT=${WEB_PORT}
-WorkingDirectory=${WEB_ROOT}
-ExecStart=/usr/bin/node ${WEB_ROOT}/app.js
-Restart=always
-User=$(logname)
-Group=$(logname)
+if [[ -z "$RADIO_CLI_BIN" || ! -f "$RADIO_CLI_BIN" ]]; then
+  echo "ERROR: radio_cli binary not found."
+  echo "Contents of $BIN_BASE:"
+  ls -la "$BIN_BASE" || true
+  exit 1
+fi
 
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable ${SERVICE_NAME}
-  systemctl restart ${SERVICE_NAME}
-}
+# Install canonical names into INSTALL_DIR root (so our symlinks are stable)
+install -m 0755 "$RADIO_CLI_BIN" "$INSTALL_DIR/radio_cli"
+if [[ -n "$DABBOARD_BIN" && -f "$DABBOARD_BIN" ]]; then
+  install -m 0755 "$DABBOARD_BIN" "$INSTALL_DIR/DABBoardRadio"
+fi
+if [[ -n "$GET_STATION_SRC" && -f "$GET_STATION_SRC" ]]; then
+  install -m 0755 "$GET_STATION_SRC" "$INSTALL_DIR/get_station_text.sh"
+fi
 
-echo "This script will install the uGreen DAB software and a web interface." 
-echo "It must be run as root.  Continue? [y/N]"
-read -r answer
-case "$answer" in
-  [Yy]*) ;;
-  *) echo "Aborted."; exit 1;;
-esac
+# Symlinks
+mkdir -p "$SBIN_DIR"
+ln -sf "$INSTALL_DIR/radio_cli" "$RADIO_CLI_SYMLINK"
+[[ -f "$INSTALL_DIR/DABBoardRadio" ]] && ln -sf "$INSTALL_DIR/DABBoardRadio" "$DABBOARD_SYMLINK" || true
+[[ -f "$INSTALL_DIR/get_station_text.sh" ]] && ln -sf "$INSTALL_DIR/get_station_text.sh" "$GET_STATION_SYMLINK" || true
 
-install_deps
-download_ugreen
-install_node
-deploy_web_interface
-create_service
+echo "==> Verifying binaries…"
+echo "   file radio_cli: $(file -b "$INSTALL_DIR/radio_cli")"
 
-echo -e "\nInstallation complete.  The web interface should now be accessible at http://$(hostname -I | awk '{print $1}'):${WEB_PORT}/"
-echo "Reboot your system to ensure group permissions take effect."
+if ! "$INSTALL_DIR/radio_cli" --help >/dev/null 2>&1; then
+  echo "WARNING: radio_cli does not seem to run on this system."
+  echo "This usually means: wrong OS bitness (32 vs 64) or missing dynamic loader."
+  echo "Try:"
+  echo "  getconf LONG_BIT"
+  echo "  file $INSTALL_DIR/radio_cli"
+  echo "  ldd $INSTALL_DIR/radio_cli || true"
+  exit 2
+fi
+
+echo
+echo "✅ Installed uGreen tools:"
+echo "  $RADIO_CLI_SYMLINK  -> $INSTALL_DIR/radio_cli"
+if [[ -f "$INSTALL_DIR/DABBoardRadio" ]]; then
+  echo "  $DABBOARD_SYMLINK  -> $INSTALL_DIR/DABBoardRadio"
+fi
+if [[ -f "$INSTALL_DIR/get_station_text.sh" ]]; then
+  echo "  $GET_STATION_SYMLINK -> $INSTALL_DIR/get_station_text.sh"
+fi
+echo
+echo "Next: restart your web interface service (if installed):"
+echo "  sudo systemctl restart dab-webserver"
