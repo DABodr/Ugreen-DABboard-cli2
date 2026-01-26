@@ -83,63 +83,70 @@ download_ugreen() {
   arch="$(uname -m)"
   radio_cli_bin=""
   dab_radio_bin=""
-  # Determine search patterns based on architecture.  Patterns are
-  # processed in order; the first matching binary will be selected.
-  declare -a patterns
-  case "$arch" in
-    *aarch64*|*arm64*)
-      patterns=("*aarch64*" "*64*" "*arm64*")
-      ;;
-    *armv7*|*armv6*|*armhf*|*arm*)
-      patterns=("*armhf*" "*32*" "*armv7*" "*armv6*" "*arm*")
-      ;;
-    *x86_64*)
-      patterns=("*x86_64*" "*64*")
-      ;;
-    *)
-      patterns=("")
-      echo "Warning: unknown architecture $arch; will attempt to use a generic radio_cli binary." >&2
-      ;;
-  esac
-  # Select the radio_cli binary
-  for pat in "${patterns[@]}"; do
-    for candidate in "$INSTALL_DIR"/radio_cli*; do
-      # Skip documentation files (e.g. RELEASE_NOTES.md)
-      if [[ -f "$candidate" ]] && [[ "$candidate" == *radio_cli* ]] && [[ "$candidate" != *.md ]] ; then
-        if [[ -n "$pat" ]] && [[ "${candidate##*/}" == $pat ]]; then
-          radio_cli_bin="$candidate"
-          break 2
-        fi
-      fi
-    done
+  # Select binaries based on architecture.  Loop over all
+  # radio_cli* candidates and pick the one whose name contains a
+  # substring matching the current architecture.  This logic covers
+  # common suffixes (e.g. _armhf, _armv7l, _aarch64, _x86_64).  If no
+  # specific match is found, fallback to the first non‑markdown file.
+  for candidate in "$INSTALL_DIR"/radio_cli*; do
+    [ -f "$candidate" ] || continue
+    base="${candidate##*/}"
+    case "$arch:$base" in
+      # 64‑bit ARM
+      *aarch64*:*aarch64*|*aarch64*:*64*|*aarch64*:*arm64*)
+        radio_cli_bin="$candidate"; break;;
+      *arm64*:*aarch64*|*arm64*:*64*|*arm64*:*arm64*)
+        radio_cli_bin="$candidate"; break;;
+      # 32‑bit ARM (armhf/armv7/armv6)
+      *armv7*:*armhf*|*armv7*:*32*|*armv7*:*armv7*|*armv7*:*armv6*|*armv7*:*arm*)
+        radio_cli_bin="$candidate"; break;;
+      *armv6*:*armhf*|*armv6*:*32*|*armv6*:*armv7*|*armv6*:*armv6*|*armv6*:*arm*)
+        radio_cli_bin="$candidate"; break;;
+      *armhf*:*armhf*|*armhf*:*32*|*armhf*:*armv7*|*armhf*:*armv6*|*armhf*:*arm*)
+        radio_cli_bin="$candidate"; break;;
+      *arm*:*armhf*|*arm*:*32*|*arm*:*armv7*|*arm*:*armv6*|*arm*:*arm*)
+        radio_cli_bin="$candidate"; break;;
+      # x86_64
+      *x86_64*:*x86_64*|*x86_64*:*64*)
+        radio_cli_bin="$candidate"; break;;
+    esac
   done
-  # If no pattern matched, fall back to the first executable radio_cli
+  # Fallback if nothing matched: select the first executable excluding markdown
   if [ -z "$radio_cli_bin" ]; then
     for candidate in "$INSTALL_DIR"/radio_cli*; do
-      if [[ -f "$candidate" ]] && [[ "$candidate" != *.md ]]; then
-        radio_cli_bin="$candidate"
-        break
-      fi
+      [ -f "$candidate" ] || continue
+      [[ "$candidate" == *.md ]] && continue
+      radio_cli_bin="$candidate"
+      break
     done
   fi
-  # Select the DABBoardRadio binary
-  for pat in "${patterns[@]}"; do
-    for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
-      if [[ -f "$candidate" ]] && [[ "$candidate" != *.md ]]; then
-        if [[ -n "$pat" ]] && [[ "${candidate##*/}" == $pat ]]; then
-          dab_radio_bin="$candidate"
-          break 2
-        fi
-      fi
-    done
+  # Repeat the same selection logic for DABBoardRadio
+  for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
+    [ -f "$candidate" ] || continue
+    base="${candidate##*/}"
+    case "$arch:$base" in
+      *aarch64*:*aarch64*|*aarch64*:*64*|*aarch64*:*arm64*)
+        dab_radio_bin="$candidate"; break;;
+      *arm64*:*aarch64*|*arm64*:*64*|*arm64*:*arm64*)
+        dab_radio_bin="$candidate"; break;;
+      *armv7*:*armhf*|*armv7*:*32*|*armv7*:*armv7*|*armv7*:*armv6*|*armv7*:*arm*)
+        dab_radio_bin="$candidate"; break;;
+      *armv6*:*armhf*|*armv6*:*32*|*armv6*:*armv7*|*armv6*:*armv6*|*armv6*:*arm*)
+        dab_radio_bin="$candidate"; break;;
+      *armhf*:*armhf*|*armhf*:*32*|*armhf*:*armv7*|*armhf*:*armv6*|*armhf*:*arm*)
+        dab_radio_bin="$candidate"; break;;
+      *arm*:*armhf*|*arm*:*32*|*arm*:*armv7*|*arm*:*armv6*|*arm*:*arm*)
+        dab_radio_bin="$candidate"; break;;
+      *x86_64*:*x86_64*|*x86_64*:*64*)
+        dab_radio_bin="$candidate"; break;;
+    esac
   done
-  # Fallback for DABBoardRadio
   if [ -z "$dab_radio_bin" ]; then
     for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
-      if [[ -f "$candidate" ]] && [[ "$candidate" != *.md ]]; then
-        dab_radio_bin="$candidate"
-        break
-      fi
+      [ -f "$candidate" ] || continue
+      [[ "$candidate" == *.md ]] && continue
+      dab_radio_bin="$candidate"
+      break
     done
   fi
   # Create symlinks pointing to the selected binaries
