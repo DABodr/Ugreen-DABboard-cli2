@@ -111,6 +111,17 @@
       .metadata h3 {
         margin-top: 0;
       }
+
+      /* Loading indicator styles */
+      .loading {
+        display: none;
+        margin-top: var(--spacing);
+        font-style: italic;
+        color: var(--primary);
+      }
+      .loading.active {
+        display: block;
+      }
       /* Modal for log window */
       .modal {
         position: fixed;
@@ -200,6 +211,8 @@
           <option value="dark">Sombre</option>
         </select>
         <button id="logBtn">Voir les logs</button>
+        <!-- Loading indicator -->
+        <p id="loadingIndicator" class="loading">Chargement…</p>
       </section>
     </main>
     <!-- Log modal -->
@@ -232,6 +245,20 @@
       const vuBar = document.getElementById('vuBar');
       const themeSelector = document.getElementById('themeSelector');
       let audioActive = false;
+
+      // Loading indicator and state trackers
+      const loadingIndicator = document.getElementById('loadingIndicator');
+      let pendingBlock = null;
+      let pendingService = null;
+
+      // Apply saved theme from localStorage
+      (function() {
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'dark') {
+          themeSelector.value = 'dark';
+          document.documentElement.classList.add('dark-theme');
+        }
+      })();
 
       // Initialise the list of blocks
       const blocks = [
@@ -271,6 +298,9 @@
         muxNameEl.textContent = 'Scan en cours…';
         servicesEl.innerHTML = '';
         metadataEl.style.display = 'none';
+        // Show loading indicator for global scan
+        loadingIndicator.textContent = 'Scan de toutes les fréquences…';
+        loadingIndicator.classList.add('active');
         socket.emit('scanAllBlocks');
       });
 
@@ -295,6 +325,22 @@
         if (block === blocks[blocks.length - 1]) {
           scanBtn.disabled = false;
           muxNameEl.textContent = 'Sélectionnez un bloc pour voir les services';
+          loadingIndicator.classList.remove('active');
+        }
+
+        // If this was a requested single block scan, request services once the
+        // result arrives.  Only handle the first matching block to avoid
+        // triggering for unrelated events during a full scan.
+        if (pendingBlock && block === pendingBlock) {
+          pendingBlock = null;
+          // If there was an error scanning this block, inform the user
+          if (error) {
+            muxNameEl.textContent = 'Erreur lors du scan du bloc ' + block;
+            loadingIndicator.classList.remove('active');
+          } else {
+            socket.emit('listServices');
+            // The loading indicator will be dismissed when services arrive
+          }
         }
       });
 
@@ -311,15 +357,13 @@
         muxNameEl.textContent = `Chargement des services pour ${block}…`;
         servicesEl.innerHTML = '';
         metadataEl.style.display = 'none';
-        // Ask the server to tune to this block only; once finished it will
-        // automatically respond with blockResult.  After the result is
-        // received we request the list of services.
+        // Tell the server to scan only this block.  We will wait for
+        // the 'blockResult' event to know when tuning is complete.
+        pendingBlock = block;
+        // Show loading indicator for service list
+        loadingIndicator.textContent = `Chargement des services pour ${block}…`;
+        loadingIndicator.classList.add('active');
         socket.emit('scanBlock', block);
-        // Wait a short time then request service list.  This delay is a simple
-        // heuristic; in production you could listen for the blockResult event.
-        setTimeout(() => {
-          socket.emit('listServices');
-        }, 1500);
       });
 
       socket.on('services', (list) => {
@@ -344,10 +388,25 @@
         Array.from(servicesEl.children).forEach(row => row.style.backgroundColor = '');
         li.style.backgroundColor = '#eef7ff';
         metadataEl.style.display = 'none';
+        // Ask the server to select this service; wait for serviceSelected
+        pendingService = serviceId;
+        loadingIndicator.textContent = 'Chargement des métadonnées…';
+        loadingIndicator.classList.add('active');
         socket.emit('selectService', serviceId);
-        setTimeout(() => {
-          socket.emit('getMetadata');
-        }, 1000);
+      });
+
+      // After the server selects a service, request metadata
+      socket.on('serviceSelected', ({ success, error }) => {
+        if (!pendingService) return;
+        const currentService = pendingService;
+        pendingService = null;
+        if (!success) {
+          loadingIndicator.classList.remove('active');
+          alert('Erreur lors de la sélection de la station : ' + (error || 'inconnue'));
+          return;
+        }
+        // Request metadata for the selected service
+        socket.emit('getMetadata');
       });
 
       socket.on('metadata', (data) => {
@@ -364,6 +423,7 @@
         } else {
           slsImageEl.style.display = 'none';
         }
+        loadingIndicator.classList.remove('active');
       });
 
       // Log modal handling
@@ -404,8 +464,10 @@
         const value = themeSelector.value;
         if (value === 'dark') {
           document.documentElement.classList.add('dark-theme');
+          localStorage.setItem('theme', 'dark');
         } else {
           document.documentElement.classList.remove('dark-theme');
+          localStorage.setItem('theme', 'default');
         }
       });
     </script>

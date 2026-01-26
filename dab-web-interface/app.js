@@ -25,8 +25,39 @@ const fs = require('fs');
 const path = require('path');
 
 // Configuration: path to radio_cli binary and log file
-const RADIO_CLI_PATH = '/usr/local/sbin/radio_cli';
+// These values can be overridden via environment variables.  When
+// installing the web interface with our setup script the symlink
+// `/usr/local/sbin/radio_cli` is created automatically.  Expose
+// RADR settings here so they may be customised without editing the
+// code.  You may also supply a timeout for radio_cli calls via
+// RADIO_CLI_TIMEOUT_MS.  See .env.example for typical values.
+const RADIO_CLI_PATH = process.env.RADIO_CLI_PATH || '/usr/local/sbin/radio_cli';
 const LOG_PATH = path.join(__dirname, 'radio.log');
+
+// CLI option map.  Older and newer versions of radio_cli have
+// different short and long option names (e.g. `-b D` vs
+// `--boot=D`).  To accommodate this, all options are defined here
+// in one place.  If your version uses different flags just set
+// the corresponding environment variables (e.g. RADIO_CLI_BOOT="-b",
+// RADIO_CLI_FREQUENCY="-f", etc.) or edit this object.  The
+// `jsonFlag` determines which switch enables JSON output; if your
+// binary always outputs JSON, you may set this to an empty string.
+const RADIO_CLI_OPTIONS = {
+  boot: process.env.RADIO_CLI_BOOT || '--boot=D',
+  frequency: process.env.RADIO_CLI_FREQUENCY || '--frequency',
+  listServices: process.env.RADIO_CLI_LIST_SERVICES || '--list-services',
+  serviceId: process.env.RADIO_CLI_SERVICE_ID || '--service-id',
+  getDls: process.env.RADIO_CLI_GET_DLS || '--get-dls',
+  getDlPlus: process.env.RADIO_CLI_GET_DLPLUS || '--get-dlplus',
+  getSls: process.env.RADIO_CLI_GET_SLS || '--get-sls',
+  jsonFlag: process.env.RADIO_CLI_JSON_FLAG || '-j'
+};
+
+// Global timeout (ms) for radio_cli operations.  Long‑running
+// commands are killed after this period and the promise is
+// rejected.  This prevents the application from hanging
+// indefinitely if the radio_cli process becomes unresponsive.
+const RADIO_CLI_TIMEOUT_MS = parseInt(process.env.RADIO_CLI_TIMEOUT_MS, 10) || 30000;
 
 // Configuration for audio monitoring.  When using I2S output the audio
 // device exposed by the uGreen overlay is typically named
@@ -38,6 +69,33 @@ const AUDIO_DEVICE = process.env.AUDIO_DEVICE || 'sysdefault:CARD=dabboard';
 
 // Holder for the arecord process
 let audioMonitorProc = null;
+
+// DAB block whitelist.  Only blocks included here may be scanned.
+// This list mirrors the blocks defined in the client.  By
+// validating against this array we prevent arbitrary strings from
+// being passed to radio_cli.
+const VALID_BLOCKS = [
+  '5A','5B','5C','5D','6A','6B','6C','6D','7A','7B','7C','7D','7E','7F',
+  '8A','8B','8C','8D','8E','8F','9A','9B','9C','9D','9E','9F',
+  '10A','10B','10C','10D','10E','10F',
+  '11A','11B','11C','11D','11E','11F',
+  '12A','12B','12C','12D','12E','12F',
+  '13A','13B','13C','13D','13E','13F'
+];
+
+// Helper to validate a DAB block.  Returns true if the block
+// exists in VALID_BLOCKS; false otherwise.
+function isValidBlock(block) {
+  return typeof block === 'string' && VALID_BLOCKS.includes(block.toUpperCase());
+}
+
+// Helper to validate a service identifier.  Service IDs are
+// typically alphanumeric strings with no whitespace or special
+// characters.  Adjust the regex if your version uses a
+// different format.
+function isValidServiceId(id) {
+  return typeof id === 'string' && /^[0-9A-Za-z]+$/.test(id);
+}
 
 /**
  * Start monitoring the audio level using arecord.  This spawns a
@@ -71,6 +129,13 @@ function startAudioMonitor(onLevel) {
   });
   audioMonitorProc.on('close', () => {
     audioMonitorProc = null;
+  });
+
+  // Listen for errors from arecord (e.g. device not found).  When
+  // these occur append to the log so the administrator can
+  // troubleshoot the audio setup.
+  audioMonitorProc.on('error', (err) => {
+    appendLog('ERR', `audio monitor error: ${err.message}`);
   });
   return () => {
     if (audioMonitorProc) audioMonitorProc.kill('SIGINT');
@@ -110,12 +175,23 @@ function appendLog(type, message) {
  */
 function callRadioCli(args) {
   return new Promise((resolve, reject) => {
-    // Always request JSON output when possible
-    const cliArgs = [...args, '-j'];
+    // Always request JSON output when possible.  Append the
+    // configured JSON flag unless it is empty.
+    const cliArgs = [...args];
+    if (RADIO_CLI_OPTIONS.jsonFlag) {
+      cliArgs.push(RADIO_CLI_OPTIONS.jsonFlag);
+    }
     appendLog('CMD', `${RADIO_CLI_PATH} ${cliArgs.join(' ')}`);
     const proc = spawn(RADIO_CLI_PATH, cliArgs);
     let stdout = '';
     let stderr = '';
+    // Setup timeout; kill the process if it exceeds the limit
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL');
+      const msg = `radio_cli timeout after ${RADIO_CLI_TIMEOUT_MS}ms`;
+      appendLog('ERR', msg);
+      reject(new Error(msg));
+    }, RADIO_CLI_TIMEOUT_MS);
     proc.stdout.on('data', (data) => {
       stdout += data.toString();
     });
@@ -123,6 +199,7 @@ function callRadioCli(args) {
       stderr += data.toString();
     });
     proc.on('close', (code) => {
+      clearTimeout(timer);
       appendLog('OUT', stdout.trim());
       if (stderr) appendLog('ERR', stderr.trim());
       if (code === 0) {
@@ -136,6 +213,11 @@ function callRadioCli(args) {
       } else {
         reject(new Error(`radio_cli exited with code ${code}: ${stderr.trim()}`));
       }
+    });
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      appendLog('ERR', `Failed to spawn radio_cli: ${err.message}`);
+      reject(err);
     });
   });
 }
@@ -151,10 +233,32 @@ function callRadioCli(args) {
  * @param {string} block DAB block (e.g. '5A', '11D')
  */
 async function scanBlock(block) {
-  // Boot into DAB mode; the '-b D' option boots to DAB mode only, leaving FM untouched
-  await callRadioCli(['--boot=D']);
-  // Tune to the specified block; numeric channels are accepted as arguments
-  const result = await callRadioCli([`--frequency=${block}`]);
+  // Validate block parameter to avoid malicious input
+  if (!isValidBlock(block)) {
+    throw new Error(`invalid DAB block: ${block}`);
+  }
+  // Boot into DAB mode using the configured boot option.  Some
+  // versions of radio_cli expect the mode separated by a space (e.g.
+  // '-b', 'D') while others accept '--boot=D'.  Provide both parts
+  // accordingly.
+  const bootArg = RADIO_CLI_OPTIONS.boot;
+  if (bootArg.includes('=')) {
+    await callRadioCli([bootArg]);
+  } else {
+    // Split into flag and value if no '=' is present
+    const [flag, value] = bootArg.split(' ');
+    await callRadioCli([flag, value]);
+  }
+  // Tune to the specified block using the configured frequency option
+  const freqOpt = RADIO_CLI_OPTIONS.frequency;
+  let freqArgs;
+  if (freqOpt.includes('=')) {
+    // Option already contains '=' (unlikely), append value directly
+    freqArgs = [`${freqOpt}${block}`];
+  } else {
+    freqArgs = [freqOpt, block];
+  }
+  const result = await callRadioCli(freqArgs);
   // Expect JSON output with fields like { snr: ..., mux: ..., services: [...] }
   if (result && typeof result === 'object') {
     return result;
@@ -168,7 +272,9 @@ async function scanBlock(block) {
  * id and label.  This example assumes radio_cli supports '--list-services'.
  */
 async function listServices() {
-  const result = await callRadioCli(['--list-services']);
+  const listOpt = RADIO_CLI_OPTIONS.listServices;
+  const args = listOpt.includes('=') ? [listOpt] : [listOpt];
+  const result = await callRadioCli(args);
   if (Array.isArray(result)) {
     return result;
   }
@@ -183,7 +289,18 @@ async function listServices() {
  * @param {string} serviceId The service identifier (often an integer)
  */
 async function selectService(serviceId) {
-  await callRadioCli([`--service-id=${serviceId}`]);
+  // Validate serviceId to avoid injection
+  if (!isValidServiceId(serviceId)) {
+    throw new Error(`invalid service identifier: ${serviceId}`);
+  }
+  const opt = RADIO_CLI_OPTIONS.serviceId;
+  let args;
+  if (opt.includes('=')) {
+    args = [`${opt}${serviceId}`];
+  } else {
+    args = [opt, serviceId];
+  }
+  await callRadioCli(args);
 }
 
 /**
@@ -193,9 +310,15 @@ async function selectService(serviceId) {
  * object.  For SLS images the base64 encoded data is returned.
  */
 async function getMetadata() {
-  const dls = await callRadioCli(['--get-dls']).catch(() => '');
-  const dlPlus = await callRadioCli(['--get-dlplus']).catch(() => '');
-  const sls = await callRadioCli(['--get-sls']).catch(() => '');
+  const dlsOpt = RADIO_CLI_OPTIONS.getDls;
+  const dlPlusOpt = RADIO_CLI_OPTIONS.getDlPlus;
+  const slsOpt = RADIO_CLI_OPTIONS.getSls;
+  const dlsArgs = dlsOpt.includes('=') ? [dlsOpt] : [dlsOpt];
+  const dlPlusArgs = dlPlusOpt.includes('=') ? [dlPlusOpt] : [dlPlusOpt];
+  const slsArgs = slsOpt.includes('=') ? [slsOpt] : [slsOpt];
+  const dls = await callRadioCli(dlsArgs).catch(() => '');
+  const dlPlus = await callRadioCli(dlPlusArgs).catch(() => '');
+  const sls = await callRadioCli(slsArgs).catch(() => '');
   return { dls, dlPlus, sls };
 }
 
