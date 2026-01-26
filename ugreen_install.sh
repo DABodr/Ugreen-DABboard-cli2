@@ -1,188 +1,244 @@
-#!/usr/bin/env bash
+#!/bin/bash
+#
+# ugreen_install.sh – automated setup for the uGreen DAB board + Node web interface
+#
 set -euo pipefail
 
-# ==========================
-# CONFIG: Mets ton URL ici
-# ==========================
-FILES_ZIP_URL="${FILES_ZIP_URL:-https://ugreen.eu/wp-content/uploads/files/Files_v16.zip}"
+# --------------------
+# Variables
+# --------------------
+FILES_URL="${FILES_URL:-https://ugreen.eu/wp-content/uploads/files/Files_v16.zip}"
+FILES_NAME="Files_v16.zip"
 
-# Optionnel: si tu veux aussi télécharger app.js/public/package.json depuis une archive
-WEBUI_ZIP_URL="${WEBUI_ZIP_URL:-}"  # ex: https://EXEMPLE.TON_SERVEUR/dab-web-interface.zip
+INSTALL_DIR="/usr/local/lib/ugreen-dab+"
+RADIO_CLI_SYMLINK="/usr/local/sbin/radio_cli"
+DAB_RADIO_SYMLINK="/usr/local/sbin/DABBoardRadio"
 
-# ==========================
-# INSTALL PATHS
-# ==========================
-APP_DIR="/opt/dab-web-interface"
-BIN_DIR="/usr/local/lib/ugreen-dab+"
-SBIN_LINK="/usr/local/sbin/radio_cli"
+WEB_PORT="${WEB_PORT:-9595}"
+WEB_ROOT="/opt/dab-web-interface"
+SERVICE_NAME="dab-webserver"
 
+SERVICE_USER="dabweb"
 LOG_DIR="/var/log/dab-web-interface"
-DATA_DIR="/var/lib/dab-web-interface"
+LOG_FILE="${LOG_DIR}/radio.log"
 
-SERVICE_FILE="/etc/systemd/system/dab-webserver.service"
-NODE_BIN="/usr/bin/node"
-
-# ==========================
-# HELPERS
-# ==========================
-die() { echo "ERROR: $*" >&2; exit 1; }
-
+# --------------------
+# Helpers
+# --------------------
 need_root() {
-  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    die "Lance en root: sudo bash ugreen_install.sh"
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Erreur: lance ce script en root (sudo ./ugreen_install.sh)."
+    exit 1
   fi
 }
 
-cmd_exists() { command -v "$1" >/dev/null 2>&1; }
+msg() { echo -e "\n==> $*"; }
 
-download_file() {
-  local url="$1"
-  local out="$2"
-
-  [[ -n "$url" ]] || die "URL vide (download_file)"
-  echo "Téléchargement: $url"
-  if cmd_exists curl; then
-    curl -L --fail --retry 3 --retry-delay 1 -o "$out" "$url"
-  elif cmd_exists wget; then
-    wget -O "$out" "$url"
-  else
-    die "Ni curl ni wget n'est installé. Installe: sudo apt-get install -y curl"
-  fi
-}
-
-pick_radio_cli() {
-  local search_dir="$1"
+arch_pick() {
   local arch
   arch="$(uname -m)"
-
-  mapfile -t candidates < <(find "$search_dir" -maxdepth 4 -type f -name "radio_cli*" ! -name "*.md" 2>/dev/null || true)
-  [[ "${#candidates[@]}" -gt 0 ]] || die "Aucun binaire radio_cli trouvé dans l'archive."
-
-  local best=""
-  for f in "${candidates[@]}"; do
-    if file "$f" | grep -qiE "ELF"; then
-      case "$arch" in
-        aarch64|arm64)
-          if file "$f" | grep -qi "ARM aarch64"; then best="$f"; break; fi
-          ;;
-        armv7l|armv6l)
-          if file "$f" | grep -qiE "ARM(,| )"; then best="$f"; fi
-          ;;
-        x86_64|amd64)
-          if file "$f" | grep -qi "x86-64"; then best="$f"; break; fi
-          ;;
-        i386|i686)
-          if file "$f" | grep -qiE "Intel 80386"; then best="$f"; break; fi
-          ;;
-        *)
-          best="$f"
-          ;;
-      esac
-    fi
-  done
-
-  [[ -n "$best" ]] || die "Impossible de choisir automatiquement radio_cli pour arch=$(uname -m)"
-  echo "$best"
+  case "$arch" in
+    aarch64|arm64) echo "64-bit" ;;
+    armv7l|armv7*|armhf|arm) echo "32-bit" ;;
+    x86_64|amd64) echo "64-bit" ;; # au cas où
+    *)
+      echo "64-bit" # fallback pragmatique
+      ;;
+  esac
 }
 
-check_interpreter_exists() {
-  local bin="$1"
-  local interp
-  interp="$(file "$bin" | sed -n 's/.*interpreter \([^,]*\).*/\1/p' | head -n1 || true)"
-  if [[ -n "$interp" && ! -e "$interp" ]]; then
-    echo "ATTENTION: interpréteur dynamique manquant: $interp" >&2
-    echo "=> Souvent: binaire aarch64 sur OS 32-bit, ou libc manquante." >&2
-    die "Ce binaire ne pourra pas s'exécuter sur ce système."
+install_deps() {
+  msg "Installation des dépendances (apt)…"
+  apt-get update
+  apt-get install -y --no-install-recommends \
+    ca-certificates curl unzip git \
+    libncurses5 alsa-utils
+
+  # Node.js (si pas déjà là)
+  if ! command -v node >/dev/null 2>&1; then
+    msg "Installation de Node.js (NodeSource 20.x)…"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
   fi
 }
 
-# ==========================
-# MAIN
-# ==========================
-need_root
-
-# deps
-apt-get update -y >/dev/null
-apt-get install -y unzip file >/dev/null
-
-cmd_exists "$NODE_BIN" || die "Node.js introuvable à $NODE_BIN"
-
-mkdir -p "$APP_DIR" "$BIN_DIR" "$LOG_DIR" "$DATA_DIR"
-chmod 755 "$LOG_DIR" "$DATA_DIR"
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-FILES_ZIP="$TMP_DIR/Files.zip"
-download_file "$FILES_ZIP_URL" "$FILES_ZIP"
-
-echo "Extraction Files.zip…"
-unzip -q "$FILES_ZIP" -d "$TMP_DIR/files"
-
-echo "Sélection radio_cli pour arch=$(uname -m)…"
-RADIO_BIN="$(pick_radio_cli "$TMP_DIR/files")"
-echo " -> $RADIO_BIN"
-check_interpreter_exists "$RADIO_BIN"
-
-echo "Installation radio_cli…"
-install -m 0755 "$RADIO_BIN" "$BIN_DIR/radio_cli"
-rm -f "$SBIN_LINK"
-ln -s "$BIN_DIR/radio_cli" "$SBIN_LINK"
-
-# Optionnel: WebUI zip
-if [[ -n "$WEBUI_ZIP_URL" ]]; then
-  WEBUI_ZIP="$TMP_DIR/webui.zip"
-  download_file "$WEBUI_ZIP_URL" "$WEBUI_ZIP"
-  echo "Extraction webui.zip…"
-  unzip -q "$WEBUI_ZIP" -d "$TMP_DIR/webui"
-  # On copie le contenu dans APP_DIR
-  rm -rf "$APP_DIR"
-  mkdir -p "$APP_DIR"
-  cp -a "$TMP_DIR/webui/." "$APP_DIR/"
-fi
-
-# npm install si package.json présent
-if [[ -f "$APP_DIR/package.json" ]]; then
-  if ! cmd_exists npm; then
-    apt-get install -y npm >/dev/null
+create_user_and_perms() {
+  msg "Création utilisateur système ${SERVICE_USER} + permissions (spi/gpio)…"
+  if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}"
   fi
-  cd "$APP_DIR"
-  npm ci --omit=dev || npm install --omit=dev
-fi
 
-echo "Installation service systemd (root)…"
-cat > "$SERVICE_FILE" <<EOF
+  # Groupes utiles (selon distro)
+  getent group spi >/dev/null && usermod -aG spi "${SERVICE_USER}" || true
+  getent group gpio >/dev/null && usermod -aG gpio "${SERVICE_USER}" || true
+
+  # Logs
+  mkdir -p "${LOG_DIR}"
+  touch "${LOG_FILE}"
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${LOG_DIR}"
+  chmod 750 "${LOG_DIR}"
+  chmod 640 "${LOG_FILE}"
+
+  # Sudoers: autoriser radio_cli sans mot de passe
+  msg "Configuration sudoers pour permettre à ${SERVICE_USER} d’exécuter radio_cli en root…"
+  cat > /etc/sudoers.d/dab-web-interface <<EOF
+${SERVICE_USER} ALL=(root) NOPASSWD: ${RADIO_CLI_SYMLINK}
+Defaults!${RADIO_CLI_SYMLINK} !requiretty
+EOF
+  chmod 440 /etc/sudoers.d/dab-web-interface
+}
+
+download_ugreen() {
+  msg "Téléchargement uGreen: ${FILES_URL}"
+  rm -f "/tmp/${FILES_NAME}"
+  curl -fL "${FILES_URL}" -o "/tmp/${FILES_NAME}"
+
+  msg "Extraction uGreen…"
+  rm -rf /tmp/Files_v16
+  unzip -o "/tmp/${FILES_NAME}" -d /tmp
+
+  if [[ ! -d /tmp/Files_v16 ]]; then
+    echo "Erreur: archive inattendue, /tmp/Files_v16 introuvable après unzip."
+    exit 1
+  fi
+
+  local bitdir
+  bitdir="$(arch_pick)"
+
+  local src_radio="/tmp/Files_v16/bin/${bitdir}/radio_cli_v3.2.1"
+  local src_dab="/tmp/Files_v16/bin/${bitdir}/DABBoardRadio_v0.17.2"
+
+  if [[ ! -f "${src_radio}" ]]; then
+    echo "Erreur: binaire radio_cli introuvable: ${src_radio}"
+    exit 1
+  fi
+  if [[ ! -f "${src_dab}" ]]; then
+    echo "Erreur: binaire DABBoardRadio introuvable: ${src_dab}"
+    exit 1
+  fi
+
+  msg "Installation dans ${INSTALL_DIR} (arch: ${bitdir})…"
+  rm -rf "${INSTALL_DIR}"
+  mkdir -p "${INSTALL_DIR}"
+
+  # On copie en noms stables (sans suffixe), sinon tu vas revivre l’enfer des symlinks.
+  cp -f "${src_radio}" "${INSTALL_DIR}/radio_cli"
+  cp -f "${src_dab}" "${INSTALL_DIR}/DABBoardRadio"
+
+  chmod 755 "${INSTALL_DIR}/radio_cli" "${INSTALL_DIR}/DABBoardRadio"
+
+  # Liens dans /usr/local/sbin
+  ln -sf "${INSTALL_DIR}/radio_cli" "${RADIO_CLI_SYMLINK}"
+  ln -sf "${INSTALL_DIR}/DABBoardRadio" "${DAB_RADIO_SYMLINK}"
+
+  msg "Vérif exécution (root)…"
+  "${RADIO_CLI_SYMLINK}" --help >/dev/null
+}
+
+deploy_web_interface() {
+  msg "Déploiement WebUI dans ${WEB_ROOT}…"
+  mkdir -p "${WEB_ROOT}"
+
+  # Le script doit être lancé depuis le dossier du projet qui contient dab-web-interface/
+  if [[ -d "dab-web-interface" ]]; then
+    rm -rf "${WEB_ROOT:?}/"*
+    cp -r dab-web-interface/* "${WEB_ROOT}/"
+  else
+    echo "Erreur: dossier 'dab-web-interface' introuvable. Lance le script depuis la racine du projet."
+    exit 1
+  fi
+
+  # Fix log path: l’app veut écrire /opt/dab-web-interface/radio.log
+  # On lui donne un symlink vers /var/log/… (écrit par dabweb).
+  ln -sf "${LOG_FILE}" "${WEB_ROOT}/radio.log"
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${WEB_ROOT}"
+
+  msg "Installation npm (prod)…"
+  ( cd "${WEB_ROOT}" && npm install --production )
+}
+
+patch_app_js() {
+  # On corrige les trucs évidents:
+  # - option invalide --list-services -> -g
+  # - si le code appelle radio_cli sans sudo, on préfixe
+  msg "Patch rapide app.js (options et sudo)…"
+
+  if [[ ! -f "${WEB_ROOT}/app.js" ]]; then
+    echo "Warning: ${WEB_ROOT}/app.js introuvable, patch ignoré."
+    return 0
+  fi
+
+  # 1) --list-services => -g
+  sed -i 's/--list-services/-g/g' "${WEB_ROOT}/app.js"
+
+  # 2) Option boot: si ton app utilise --boot=D, radio_cli attend -b D
+  # (ton log montrait --boot=D)
+  sed -i 's/--boot=\([A-Za-z]\)/-b \1/g' "${WEB_ROOT}/app.js"
+
+  # 3) Préfixe sudo si la commande contient "/usr/local/sbin/radio_cli" et pas déjà sudo
+  # (patch simple: remplace "CMD: /usr/local/sbin/radio_cli" côté code souvent construit en string)
+  # On vise surtout les constructions type: const cmd = "/usr/local/sbin/radio_cli ..."
+  sed -i 's#"\(/usr/local/sbin/radio_cli\)#"sudo \1#g' "${WEB_ROOT}/app.js"
+  sed -i "s#'\\(/usr/local/sbin/radio_cli\\)#'sudo \\1#g" "${WEB_ROOT}/app.js"
+}
+
+create_service() {
+  msg "Création service systemd ${SERVICE_NAME}…"
+
+  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=uGreen DAB Web Interface
 After=network.target
 
 [Service]
 Type=simple
-User=root
-Group=root
-WorkingDirectory=$APP_DIR
-Environment=PORT=9595
-Environment=HOST=0.0.0.0
-Environment=RADIO_CLI_PATH=$SBIN_LINK
-Environment=LOG_DIR=$LOG_DIR
-Environment=LOG_PATH=$LOG_DIR/radio.log
-Environment=DATA_DIR=$DATA_DIR
-ExecStart=$NODE_BIN $APP_DIR/app.js
-Restart=on-failure
+Environment=PORT=${WEB_PORT}
+WorkingDirectory=${WEB_ROOT}
+ExecStart=/usr/bin/node ${WEB_ROOT}/app.js
+Restart=always
 RestartSec=2
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+
+# Sécurité de base (sans casser sudo/radio_cli)
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable dab-webserver.service >/dev/null
-systemctl restart dab-webserver.service
+  systemctl daemon-reload
+  systemctl enable "${SERVICE_NAME}"
+  systemctl restart "${SERVICE_NAME}"
+}
 
-echo
-systemctl --no-pager --full status dab-webserver.service || true
-echo
-echo "OK."
-echo "UI: http://$(hostname -I | awk '{print $1}'):3000"
-echo "radio_cli: $SBIN_LINK -> $BIN_DIR/radio_cli"
-echo "logs: $LOG_DIR/radio.log"
+final_msg() {
+  local ip
+  ip="$(hostname -I | awk '{print $1}')"
+  msg "Terminé."
+  echo "WebUI: http://${ip}:${WEB_PORT}/"
+  echo "Service: systemctl status ${SERVICE_NAME}"
+  echo "Test radio_cli (via sudo autorisé pour ${SERVICE_USER}): sudo -u ${SERVICE_USER} sudo ${RADIO_CLI_SYMLINK} --help >/dev/null && echo OK"
+}
+
+# --------------------
+# Main
+# --------------------
+need_root
+
+echo "Ce script va installer uGreen (ZIP) + WebUI + service systemd."
+echo "URL uGreen: ${FILES_URL}"
+read -r -p "Continuer ? [y/N] " ans
+case "${ans}" in
+  y|Y|yes|YES) ;;
+  *) echo "Abandon."; exit 0 ;;
+esac
+
+install_deps
+create_user_and_perms
+download_ugreen
+deploy_web_interface
+patch_app_js
+create_service
+final_msg
