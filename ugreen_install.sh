@@ -74,54 +74,89 @@ download_ugreen() {
   chmod a+rx "$INSTALL_DIR"/DABBoardRadio* || true
 
   # The uGreen archive contains multiple versions of the binaries for
-  # different CPU architectures (e.g. 32‑bit arm, 64‑bit arm, x86_64).
-  # Choose the correct binary for this system based on the output
-  # of `uname -m`.  As documented in the uGreen I2S guide, a 64‑bit
-  # Raspberry Pi requires the 64‑bit version of radio_cli【487981551829083†L124-L136】.
+  # different CPU architectures (e.g. 32‑bit ARM, 64‑bit ARM, x86_64).
+  # Choose the correct binary for this system based on the output of
+  # `uname -m`.  If architecture‑specific binaries are not present
+  # (e.g. only a generic `radio_cli_v3.1.0` exists), fall back to the
+  # first match.  See the I2S documentation for details about
+  # selecting the appropriate version【487981551829083†L124-L136】.
   arch="$(uname -m)"
   radio_cli_bin=""
   dab_radio_bin=""
-  # Iterate over all radio_cli* files and pick the first that matches
-  # the detected architecture.  Fallback to the plain radio_cli if no
-  # architecture suffix is found.
-  for candidate in "$INSTALL_DIR"/radio_cli*; do
-    case "${candidate##*/}" in
-      *64*|*aarch64*)
-        if [[ "$arch" == aarch64* ]]; then radio_cli_bin="$candidate"; fi;;
-      *32*|*armv7*|*armhf*)
-        if [[ "$arch" == armv7* || "$arch" == arm* ]]; then radio_cli_bin="$candidate"; fi;;
-      *x86_64*)
-        if [[ "$arch" == x86_64* ]]; then radio_cli_bin="$candidate"; fi;;
-      *)
-        # Default fallback (no suffix)
-        if [ -z "$radio_cli_bin" ]; then radio_cli_bin="$candidate"; fi;;
-    esac
+  # Determine search patterns based on architecture.  Patterns are
+  # processed in order; the first matching binary will be selected.
+  declare -a patterns
+  case "$arch" in
+    *aarch64*|*arm64*)
+      patterns=("*aarch64*" "*64*" "*arm64*")
+      ;;
+    *armv7*|*armv6*|*armhf*|*arm*)
+      patterns=("*armhf*" "*32*" "*armv7*" "*armv6*" "*arm*")
+      ;;
+    *x86_64*)
+      patterns=("*x86_64*" "*64*")
+      ;;
+    *)
+      patterns=("")
+      echo "Warning: unknown architecture $arch; will attempt to use a generic radio_cli binary." >&2
+      ;;
+  esac
+  # Select the radio_cli binary
+  for pat in "${patterns[@]}"; do
+    for candidate in "$INSTALL_DIR"/radio_cli*; do
+      # Skip documentation files (e.g. RELEASE_NOTES.md)
+      if [[ -f "$candidate" ]] && [[ "$candidate" == *radio_cli* ]] && [[ "$candidate" != *.md ]] ; then
+        if [[ -n "$pat" ]] && [[ "${candidate##*/}" == $pat ]]; then
+          radio_cli_bin="$candidate"
+          break 2
+        fi
+      fi
+    done
   done
-  # Similarly choose the correct DABBoardRadio binary.
-  for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
-    case "${candidate##*/}" in
-      *64*|*aarch64*)
-        if [[ "$arch" == aarch64* ]]; then dab_radio_bin="$candidate"; fi;;
-      *32*|*armv7*|*armhf*)
-        if [[ "$arch" == armv7* || "$arch" == arm* ]]; then dab_radio_bin="$candidate"; fi;;
-      *x86_64*)
-        if [[ "$arch" == x86_64* ]]; then dab_radio_bin="$candidate"; fi;;
-      *)
-        if [ -z "$dab_radio_bin" ]; then dab_radio_bin="$candidate"; fi;;
-    esac
+  # If no pattern matched, fall back to the first executable radio_cli
+  if [ -z "$radio_cli_bin" ]; then
+    for candidate in "$INSTALL_DIR"/radio_cli*; do
+      if [[ -f "$candidate" ]] && [[ "$candidate" != *.md ]]; then
+        radio_cli_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  # Select the DABBoardRadio binary
+  for pat in "${patterns[@]}"; do
+    for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
+      if [[ -f "$candidate" ]] && [[ "$candidate" != *.md ]]; then
+        if [[ -n "$pat" ]] && [[ "${candidate##*/}" == $pat ]]; then
+          dab_radio_bin="$candidate"
+          break 2
+        fi
+      fi
+    done
   done
+  # Fallback for DABBoardRadio
+  if [ -z "$dab_radio_bin" ]; then
+    for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
+      if [[ -f "$candidate" ]] && [[ "$candidate" != *.md ]]; then
+        dab_radio_bin="$candidate"
+        break
+      fi
+    done
+  fi
   # Create symlinks pointing to the selected binaries
   if [ -n "$radio_cli_bin" ]; then
     ln -sf "$radio_cli_bin" "$RADIO_CLI_SYMLINK"
   else
-    echo "Warning: could not determine appropriate radio_cli binary; defaulting to first match."
-    ln -sf "$INSTALL_DIR"/radio_cli* "$RADIO_CLI_SYMLINK"
+    echo "Warning: could not determine appropriate radio_cli binary; defaulting to first match." >&2
+    # Link to the first radio_cli file (non‑markdown) if present
+    candidate=$(ls "$INSTALL_DIR"/radio_cli* 2>/dev/null | grep -v ".md$" | head -n 1 || true)
+    [ -n "$candidate" ] && ln -sf "$candidate" "$RADIO_CLI_SYMLINK"
   fi
   if [ -n "$dab_radio_bin" ]; then
     ln -sf "$dab_radio_bin" "$DAB_RADIO_SYMLINK"
   else
-    echo "Warning: could not determine appropriate DABBoardRadio binary; defaulting to first match."
-    ln -sf "$INSTALL_DIR"/DABBoardRadio* "$DAB_RADIO_SYMLINK"
+    echo "Warning: could not determine appropriate DABBoardRadio binary; defaulting to first match." >&2
+    candidate=$(ls "$INSTALL_DIR"/DABBoardRadio* 2>/dev/null | grep -v ".md$" | head -n 1 || true)
+    [ -n "$candidate" ] && ln -sf "$candidate" "$DAB_RADIO_SYMLINK"
   fi
   echo "uGreen binaries installed in $INSTALL_DIR (architecture: $arch)"
 
