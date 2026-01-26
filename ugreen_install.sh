@@ -31,7 +31,33 @@ download_ugreen() {
   wget -O "/tmp/$FILES_NAME" "$FILES_URL"
   echo "Extracting…"
   unzip -o "/tmp/$FILES_NAME" -d /usr/local/lib
-  mv -f "/usr/local/lib/${FILES_NAME%.zip}" "$INSTALL_DIR"
+  # After extraction, uGreen’s archive may unpack as DABBoard/ instead of Files_v12.
+  # Detect the extracted directory name.  If multiple directories are present
+  # (e.g. during an update), prefer the one containing radio_cli.
+  extracted_dir=""
+  if [ -d "/usr/local/lib/DABBoard" ]; then
+    extracted_dir="/usr/local/lib/DABBoard"
+  elif [ -d "/usr/local/lib/${FILES_NAME%.zip}" ]; then
+    extracted_dir="/usr/local/lib/${FILES_NAME%.zip}"
+  else
+    # Fallback: choose the first directory containing radio_cli
+    for d in /usr/local/lib/*; do
+      if [ -d "$d" ] && compgen -G "$d/radio_cli*" >/dev/null; then
+        extracted_dir="$d"
+        break
+      fi
+    done
+  fi
+  if [ -z "$extracted_dir" ]; then
+    echo "Error: could not locate extracted uGreen directory after unzip." >&2
+    exit 1
+  fi
+  # Move or rename the extracted directory into the installation directory.  If
+  # INSTALL_DIR already exists, remove it first to avoid mixing versions.
+  if [ -d "$INSTALL_DIR" ]; then
+    rm -rf "$INSTALL_DIR"
+  fi
+  mv -f "$extracted_dir" "$INSTALL_DIR"
 
   # The uGreen archive contains multiple versions of the binaries for
   # different CPU architectures (e.g. 32‑bit arm, 64‑bit arm, x86_64).
