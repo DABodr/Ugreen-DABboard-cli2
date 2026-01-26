@@ -83,72 +83,46 @@ download_ugreen() {
   arch="$(uname -m)"
   radio_cli_bin=""
   dab_radio_bin=""
-  # Select binaries based on architecture.  Loop over all
-  # radio_cli* candidates and pick the one whose name contains a
-  # substring matching the current architecture.  This logic covers
-  # common suffixes (e.g. _armhf, _armv7l, _aarch64, _x86_64).  If no
-  # specific match is found, fallback to the first non‑markdown file.
-  for candidate in "$INSTALL_DIR"/radio_cli*; do
-    [ -f "$candidate" ] || continue
-    base="${candidate##*/}"
-    case "$arch:$base" in
-      # 64‑bit ARM
-      *aarch64*:*aarch64*|*aarch64*:*64*|*aarch64*:*arm64*)
-        radio_cli_bin="$candidate"; break;;
-      *arm64*:*aarch64*|*arm64*:*64*|*arm64*:*arm64*)
-        radio_cli_bin="$candidate"; break;;
-      # 32‑bit ARM (armhf/armv7/armv6)
-      *armv7*:*armhf*|*armv7*:*32*|*armv7*:*armv7*|*armv7*:*armv6*|*armv7*:*arm*)
-        radio_cli_bin="$candidate"; break;;
-      *armv6*:*armhf*|*armv6*:*32*|*armv6*:*armv7*|*armv6*:*armv6*|*armv6*:*arm*)
-        radio_cli_bin="$candidate"; break;;
-      *armhf*:*armhf*|*armhf*:*32*|*armhf*:*armv7*|*armhf*:*armv6*|*armhf*:*arm*)
-        radio_cli_bin="$candidate"; break;;
-      *arm*:*armhf*|*arm*:*32*|*arm*:*armv7*|*arm*:*armv6*|*arm*:*arm*)
-        radio_cli_bin="$candidate"; break;;
-      # x86_64
-      *x86_64*:*x86_64*|*x86_64*:*64*)
-        radio_cli_bin="$candidate"; break;;
-    esac
-  done
-  # Fallback if nothing matched: select the first executable excluding markdown
-  if [ -z "$radio_cli_bin" ]; then
-    for candidate in "$INSTALL_DIR"/radio_cli*; do
-      [ -f "$candidate" ] || continue
-      [[ "$candidate" == *.md ]] && continue
-      radio_cli_bin="$candidate"
-      break
+  # Build a list of candidate binaries by searching recursively within
+  # the installation directory.  Some versions of the uGreen archive
+  # organise binaries inside subdirectories (e.g. armhf/aarch64) rather
+  # than in the top level.  Use find to locate all potential radio_cli
+  # and DABBoardRadio executables and exclude Markdown files.
+  mapfile -t radio_candidates < <(find "$INSTALL_DIR" -type f -name 'radio_cli*' ! -name '*.md' 2>/dev/null)
+  mapfile -t dab_candidates < <(find "$INSTALL_DIR" -type f -name 'DABBoardRadio*' ! -name '*.md' 2>/dev/null)
+  # Function to select a binary from a list based on architecture patterns
+  select_binary() {
+    local arch_val="$1"; shift
+    local -n _candidates=$1; shift
+    local selected=""
+    for candidate in "${_candidates[@]}"; do
+      base="${candidate##*/}"
+      case "$arch_val:$base" in
+        *aarch64*:*aarch64*|*aarch64*:*64*|*aarch64*:*arm64*)
+          selected="$candidate"; break;;
+        *arm64*:*aarch64*|*arm64*:*64*|*arm64*:*arm64*)
+          selected="$candidate"; break;;
+        *armv7*:*armhf*|*armv7*:*32*|*armv7*:*armv7*|*armv7*:*armv6*|*armv7*:*arm*)
+          selected="$candidate"; break;;
+        *armv6*:*armhf*|*armv6*:*32*|*armv6*:*armv7*|*armv6*:*armv6*|*armv6*:*arm*)
+          selected="$candidate"; break;;
+        *armhf*:*armhf*|*armhf*:*32*|*armhf*:*armv7*|*armhf*:*armv6*|*armhf*:*arm*)
+          selected="$candidate"; break;;
+        *arm*:*armhf*|*arm*:*32*|*arm*:*armv7*|*arm*:*armv6*|*arm*:*arm*)
+          selected="$candidate"; break;;
+        *x86_64*:*x86_64*|*x86_64*:*64*)
+          selected="$candidate"; break;;
+      esac
     done
-  fi
-  # Repeat the same selection logic for DABBoardRadio
-  for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
-    [ -f "$candidate" ] || continue
-    base="${candidate##*/}"
-    case "$arch:$base" in
-      *aarch64*:*aarch64*|*aarch64*:*64*|*aarch64*:*arm64*)
-        dab_radio_bin="$candidate"; break;;
-      *arm64*:*aarch64*|*arm64*:*64*|*arm64*:*arm64*)
-        dab_radio_bin="$candidate"; break;;
-      *armv7*:*armhf*|*armv7*:*32*|*armv7*:*armv7*|*armv7*:*armv6*|*armv7*:*arm*)
-        dab_radio_bin="$candidate"; break;;
-      *armv6*:*armhf*|*armv6*:*32*|*armv6*:*armv7*|*armv6*:*armv6*|*armv6*:*arm*)
-        dab_radio_bin="$candidate"; break;;
-      *armhf*:*armhf*|*armhf*:*32*|*armhf*:*armv7*|*armhf*:*armv6*|*armhf*:*arm*)
-        dab_radio_bin="$candidate"; break;;
-      *arm*:*armhf*|*arm*:*32*|*arm*:*armv7*|*arm*:*armv6*|*arm*:*arm*)
-        dab_radio_bin="$candidate"; break;;
-      *x86_64*:*x86_64*|*x86_64*:*64*)
-        dab_radio_bin="$candidate"; break;;
-    esac
-  done
-  if [ -z "$dab_radio_bin" ]; then
-    for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
-      [ -f "$candidate" ] || continue
-      [[ "$candidate" == *.md ]] && continue
-      dab_radio_bin="$candidate"
-      break
-    done
-  fi
+    # Fallback: pick the first candidate
+    if [ -z "$selected" ] && [ "${#_candidates[@]}" -gt 0 ]; then
+      selected="${_candidates[0]}"
+    fi
+    echo "$selected"
+  }
+  # Select the appropriate binary
+  radio_cli_bin=$(select_binary "$arch" radio_candidates)
+  dab_radio_bin=$(select_binary "$arch" dab_candidates)
   # Create symlinks pointing to the selected binaries
   if [ -n "$radio_cli_bin" ]; then
     ln -sf "$radio_cli_bin" "$RADIO_CLI_SYMLINK"
