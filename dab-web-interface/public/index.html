@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>uGreen DAB Web Interface</title>
+    <style>
+      /* Root variables for easy theming */
+      :root {
+        --primary: #007acc;
+        --secondary: #e5e5e5;
+        --success: #4caf50;
+        --error: #f44336;
+        --background: #f8f9fa;
+        --text: #333;
+        --border-radius: 6px;
+        --spacing: 8px;
+      }
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background-color: var(--background);
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        padding: var(--spacing) 16px;
+        background-color: var(--primary);
+        color: #fff;
+        font-size: 1.2rem;
+        text-align: center;
+      }
+      main {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+      }
+      aside {
+        width: 250px;
+        background-color: #fff;
+        border-right: 1px solid #ccc;
+        overflow-y: auto;
+        padding: var(--spacing);
+      }
+      section {
+        flex: 1;
+        padding: var(--spacing) 16px;
+        overflow-y: auto;
+      }
+      button {
+        padding: 6px 12px;
+        border: none;
+        border-radius: var(--border-radius);
+        background-color: var(--primary);
+        color: #fff;
+        cursor: pointer;
+        margin: var(--spacing) 0;
+      }
+      button:disabled {
+        background-color: #aaa;
+        cursor: default;
+      }
+      .block-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .block-list li {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .indicator {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 4px;
+        display: inline-block;
+      }
+      .indicator.gray {
+        background-color: #bbb;
+      }
+      .indicator.green {
+        background-color: var(--success);
+      }
+      .service-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .service-list li {
+        padding: 4px 8px;
+        border-radius: var(--border-radius);
+        cursor: pointer;
+        margin-bottom: 4px;
+      }
+      .service-list li:hover {
+        background-color: #eef2f7;
+      }
+      .metadata {
+        margin-top: 16px;
+        background-color: #fff;
+        padding: 12px;
+        border-radius: var(--border-radius);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      .metadata h3 {
+        margin-top: 0;
+      }
+      /* Modal for log window */
+      .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        visibility: hidden;
+        opacity: 0;
+        transition: visibility 0s, opacity 0.2s;
+      }
+      .modal.active {
+        visibility: visible;
+        opacity: 1;
+      }
+      .modal-content {
+        width: 80%;
+        max-width: 800px;
+        background: #fff;
+        padding: 16px;
+        border-radius: var(--border-radius);
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+      .modal-content pre {
+        white-space: pre-wrap;
+      }
+
+      /* VU meter styles */
+      #vuMeter {
+        margin-top: 16px;
+        height: 16px;
+        background: #ddd;
+        border-radius: var(--border-radius);
+        overflow: hidden;
+        display: none;
+      }
+      #vuBar {
+        height: 100%;
+        width: 0%;
+        background: var(--primary);
+        transition: width 0.1s linear;
+      }
+
+      /* Dark theme example variables */
+      .dark-theme {
+        --background: #121212;
+        --text: #e0e0e0;
+        --primary: #bb86fc;
+        --secondary: #1f1f1f;
+        --success: #03dac5;
+        --error: #cf6679;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      uGreen DAB Web Interface
+    </header>
+    <main>
+      <aside>
+        <button id="scanBtn">Lancer le scan</button>
+        <ul id="blockList" class="block-list"></ul>
+      </aside>
+      <section>
+        <h2 id="muxName">Sélectionnez un bloc pour voir les services</h2>
+        <ul id="services" class="service-list"></ul>
+        <div id="metadata" class="metadata" style="display:none;">
+          <h3>Métadonnées</h3>
+          <p><strong>DLS:</strong> <span id="dls"></span></p>
+          <p><strong>DL+:</strong> <span id="dlPlus"></span></p>
+          <div id="slsContainer">
+            <p><strong>SLS:</strong></p>
+            <img id="slsImage" src="" alt="Slideshow" style="max-width:100%; display:none;" />
+          </div>
+        </div>
+        <button id="audioToggle">Afficher le vumètre</button>
+        <div id="vuMeter"><div id="vuBar"></div></div>
+        <br />
+        <label for="themeSelector">Thème :</label>
+        <select id="themeSelector">
+          <option value="default">Clair</option>
+          <option value="dark">Sombre</option>
+        </select>
+        <button id="logBtn">Voir les logs</button>
+      </section>
+    </main>
+    <!-- Log modal -->
+    <div id="logModal" class="modal">
+      <div class="modal-content">
+        <h3>Journal des commandes</h3>
+        <pre id="logContent">Chargement...</pre>
+        <button id="closeLogBtn">Fermer</button>
+      </div>
+    </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      const scanBtn = document.getElementById('scanBtn');
+      const blockListEl = document.getElementById('blockList');
+      const muxNameEl = document.getElementById('muxName');
+      const servicesEl = document.getElementById('services');
+      const metadataEl = document.getElementById('metadata');
+      const dlsEl = document.getElementById('dls');
+      const dlPlusEl = document.getElementById('dlPlus');
+      const slsImageEl = document.getElementById('slsImage');
+      const logBtn = document.getElementById('logBtn');
+      const logModal = document.getElementById('logModal');
+      const logContent = document.getElementById('logContent');
+      const closeLogBtn = document.getElementById('closeLogBtn');
+
+      // Elements for audio monitoring and theming
+      const audioToggle = document.getElementById('audioToggle');
+      const vuMeter = document.getElementById('vuMeter');
+      const vuBar = document.getElementById('vuBar');
+      const themeSelector = document.getElementById('themeSelector');
+      let audioActive = false;
+
+      // Initialise the list of blocks
+      const blocks = [
+        '5A','5B','5C','5D','6A','6B','6C','6D','7A','7B','7C','7D','7E','7F',
+        '8A','8B','8C','8D','8E','8F','9A','9B','9C','9D','9E','9F',
+        '10A','10B','10C','10D','10E','10F',
+        '11A','11B','11C','11D','11E','11F',
+        '12A','12B','12C','12D','12E','12F',
+        '13A','13B','13C','13D','13E','13F'
+      ];
+
+      const blockElements = {};
+      blocks.forEach(block => {
+        const li = document.createElement('li');
+        const indicator = document.createElement('span');
+        indicator.className = 'indicator gray';
+        indicator.dataset.block = block;
+        li.appendChild(indicator);
+        const label = document.createElement('span');
+        label.textContent = block;
+        li.appendChild(label);
+        const snrSpan = document.createElement('span');
+        snrSpan.textContent = '';
+        snrSpan.style.marginLeft = 'auto';
+        li.appendChild(snrSpan);
+        blockListEl.appendChild(li);
+        blockElements[block] = { indicator, snrSpan };
+      });
+
+      scanBtn.addEventListener('click', () => {
+        scanBtn.disabled = true;
+        // Reset indicators
+        Object.values(blockElements).forEach(el => {
+          el.indicator.className = 'indicator gray';
+          el.snrSpan.textContent = '';
+        });
+        muxNameEl.textContent = 'Scan en cours…';
+        servicesEl.innerHTML = '';
+        metadataEl.style.display = 'none';
+        socket.emit('scanAllBlocks');
+      });
+
+      socket.on('blockResult', ({ block, result, error }) => {
+        const el = blockElements[block];
+        if (!el) return;
+        if (error || !result) {
+          el.indicator.className = 'indicator gray';
+          el.snrSpan.textContent = '';
+        } else {
+          el.indicator.className = 'indicator green';
+          const snr = result.snr ? `${result.snr.toFixed(1)} dB` : '';
+          el.snrSpan.textContent = snr;
+        }
+        // If this block has a mux name, display it after the block label
+        if (result && result.mux) {
+          const li = blockListEl.children[blocks.indexOf(block)];
+          const spanLabel = li.children[1];
+          spanLabel.textContent = `${block} — ${result.mux}`;
+        }
+        // When last block processed, re-enable scan button
+        if (block === blocks[blocks.length - 1]) {
+          scanBtn.disabled = false;
+          muxNameEl.textContent = 'Sélectionnez un bloc pour voir les services';
+        }
+      });
+
+      // When user clicks on a block row, tune and list services
+      blockListEl.addEventListener('click', (event) => {
+        const li = event.target.closest('li');
+        if (!li) return;
+        const idx = Array.from(blockListEl.children).indexOf(li);
+        const block = blocks[idx];
+        // Highlight selected row
+        Array.from(blockListEl.children).forEach(row => row.style.backgroundColor = '');
+        li.style.backgroundColor = '#eef7ff';
+        // Request service list for this block
+        muxNameEl.textContent = `Chargement des services pour ${block}…`;
+        servicesEl.innerHTML = '';
+        metadataEl.style.display = 'none';
+        // Ask the server to tune to this block only; once finished it will
+        // automatically respond with blockResult.  After the result is
+        // received we request the list of services.
+        socket.emit('scanBlock', block);
+        // Wait a short time then request service list.  This delay is a simple
+        // heuristic; in production you could listen for the blockResult event.
+        setTimeout(() => {
+          socket.emit('listServices');
+        }, 1500);
+      });
+
+      socket.on('services', (list) => {
+        servicesEl.innerHTML = '';
+        if (!list || list.length === 0) {
+          muxNameEl.textContent = 'Aucun service disponible pour ce bloc.';
+          return;
+        }
+        muxNameEl.textContent = 'Sélectionnez une station :';
+        list.forEach(service => {
+          const li = document.createElement('li');
+          li.textContent = service.label || service.name || service.id;
+          li.dataset.id = service.id;
+          servicesEl.appendChild(li);
+        });
+      });
+
+      servicesEl.addEventListener('click', (event) => {
+        const li = event.target.closest('li');
+        if (!li) return;
+        const serviceId = li.dataset.id;
+        Array.from(servicesEl.children).forEach(row => row.style.backgroundColor = '');
+        li.style.backgroundColor = '#eef7ff';
+        metadataEl.style.display = 'none';
+        socket.emit('selectService', serviceId);
+        setTimeout(() => {
+          socket.emit('getMetadata');
+        }, 1000);
+      });
+
+      socket.on('metadata', (data) => {
+        if (data.error) {
+          alert('Erreur lors de la récupération des métadonnées: ' + data.error);
+          return;
+        }
+        metadataEl.style.display = 'block';
+        dlsEl.textContent = data.dls || '';
+        dlPlusEl.textContent = data.dlPlus || '';
+        if (data.sls && data.sls.length > 0) {
+          slsImageEl.src = `data:image/png;base64,${data.sls}`;
+          slsImageEl.style.display = 'block';
+        } else {
+          slsImageEl.style.display = 'none';
+        }
+      });
+
+      // Log modal handling
+      logBtn.addEventListener('click', () => {
+        logModal.classList.add('active');
+        logContent.textContent = 'Chargement…';
+        socket.emit('getLogs');
+      });
+      closeLogBtn.addEventListener('click', () => {
+        logModal.classList.remove('active');
+      });
+      socket.on('logs', (logs) => {
+        logContent.textContent = logs;
+      });
+
+      // Audio monitoring handling
+      audioToggle.addEventListener('click', () => {
+        if (!audioActive) {
+          socket.emit('startAudioMonitor');
+          vuMeter.style.display = 'block';
+          audioToggle.textContent = 'Masquer le vumètre';
+          audioActive = true;
+        } else {
+          socket.emit('stopAudioMonitor');
+          vuMeter.style.display = 'none';
+          audioToggle.textContent = 'Afficher le vumètre';
+          audioActive = false;
+        }
+      });
+      socket.on('audioLevel', (level) => {
+        // level is between 0 and 1; convert to percentage
+        const pct = Math.round(level * 100);
+        vuBar.style.width = pct + '%';
+      });
+
+      // Theme switching
+      themeSelector.addEventListener('change', () => {
+        const value = themeSelector.value;
+        if (value === 'dark') {
+          document.documentElement.classList.add('dark-theme');
+        } else {
+          document.documentElement.classList.remove('dark-theme');
+        }
+      });
+    </script>
+  </body>
+</html>
