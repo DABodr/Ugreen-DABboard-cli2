@@ -288,8 +288,8 @@ function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } 
 // -----------------------------
 // Block to frequency index mapping
 // -----------------------------
-// Based on radio_cli full_scan output for European DAB Band III
-// Note: There are intermediate frequencies (10N, 11N, 12N) that offset the indices
+// European DAB Band III - 38 standard frequencies
+// Index corresponds to line number in freq_list.txt (0-indexed)
 
 const BLOCK_TO_FREQ = {
   // Band 5: 174.928 - 180.064 MHz
@@ -302,14 +302,14 @@ const BLOCK_TO_FREQ = {
   '8A': 12, '8B': 13, '8C': 14, '8D': 15,
   // Band 9: 202.928 - 208.064 MHz
   '9A': 16, '9B': 17, '9C': 18, '9D': 19,
-  // Band 10: 209.936 - 215.072 MHz (includes 10N at index 21)
-  '10A': 20, '10N': 21, '10B': 22, '10C': 23, '10D': 24,
-  // Band 11: 216.928 - 222.064 MHz (includes 11N at index 26)
-  '11A': 25, '11N': 26, '11B': 27, '11C': 28, '11D': 29,
-  // Band 12: 223.936 - 229.072 MHz (includes 12N at index 31)
-  '12A': 30, '12N': 31, '12B': 32, '12C': 33, '12D': 34,
+  // Band 10: 209.936 - 215.072 MHz
+  '10A': 20, '10B': 21, '10C': 22, '10D': 23,
+  // Band 11: 216.928 - 222.064 MHz
+  '11A': 24, '11B': 25, '11C': 26, '11D': 27,
+  // Band 12: 223.936 - 229.072 MHz
+  '12A': 28, '12B': 29, '12C': 30, '12D': 31,
   // Band 13: 230.784 - 239.200 MHz
-  '13A': 35, '13B': 36, '13C': 37, '13D': 38, '13E': 39, '13F': 40
+  '13A': 32, '13B': 33, '13C': 34, '13D': 35, '13E': 36, '13F': 37
 };
 
 const FREQ_TO_BLOCK = Object.fromEntries(
@@ -320,9 +320,19 @@ const FREQ_TO_BLOCK = Object.fromEntries(
 // radio_cli actions (real flags)
 // -----------------------------
 
+// Path to frequency list file
+const FREQ_LIST_PATH = process.env.FREQ_LIST_PATH || path.join(__dirname, "freq_list.txt");
+
 async function bootDab() {
-  // -b D + -j
-  await runRadioCli(["-b", "D", "-j"]);
+  // -b D boots into DAB mode
+  // -y loads frequency list (required for tuning to work!)
+  // -j requests JSON output
+  if (fs.existsSync(FREQ_LIST_PATH)) {
+    await runRadioCli(["-b", "D", "-y", FREQ_LIST_PATH, "-j"]);
+  } else {
+    logWarn(`Frequency list not found at ${FREQ_LIST_PATH}, tuning may not work`);
+    await runRadioCli(["-b", "D", "-j"]);
+  }
 }
 
 async function tuneFrequencyIndex(frequencyIndex) {
