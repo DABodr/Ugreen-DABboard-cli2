@@ -1,10 +1,23 @@
 {
   "name": "dab-web-interface",
-  "version": "1.0.0",
-  "description": "Modern web interface for controlling a uGreen DAB board",
+  "version": "1.1.0",
+  "description": "Modern web interface for controlling a uGreen DAB board on Raspberry Pi",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js"
+    "start": "node app.js",
+    "dev": "node --watch app.js"
+  },
+  "keywords": [
+    "dab",
+    "radio",
+    "ugreen",
+    "raspberry-pi",
+    "web-interface"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "express": "^4.18.2",
