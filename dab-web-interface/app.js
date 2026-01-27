@@ -288,17 +288,28 @@ function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } 
 // -----------------------------
 // Block to frequency index mapping
 // -----------------------------
+// Based on radio_cli full_scan output for European DAB Band III
+// Note: There are intermediate frequencies (10N, 11N, 12N) that offset the indices
 
 const BLOCK_TO_FREQ = {
+  // Band 5: 174.928 - 180.064 MHz
   '5A': 0, '5B': 1, '5C': 2, '5D': 3,
+  // Band 6: 181.936 - 187.072 MHz
   '6A': 4, '6B': 5, '6C': 6, '6D': 7,
-  '7A': 8, '7B': 9, '7C': 10, '7D': 11, '7E': 12, '7F': 13,
-  '8A': 14, '8B': 15, '8C': 16, '8D': 17, '8E': 18, '8F': 19,
-  '9A': 20, '9B': 21, '9C': 22, '9D': 23, '9E': 24, '9F': 25,
-  '10A': 26, '10B': 27, '10C': 28, '10D': 29, '10E': 30, '10F': 31,
-  '11A': 32, '11B': 33, '11C': 34, '11D': 35, '11E': 36, '11F': 37,
-  '12A': 38, '12B': 39, '12C': 40, '12D': 41, '12E': 42, '12F': 43,
-  '13A': 44, '13B': 45, '13C': 46, '13D': 47, '13E': 48, '13F': 49
+  // Band 7: 188.928 - 194.064 MHz
+  '7A': 8, '7B': 9, '7C': 10, '7D': 11,
+  // Band 8: 195.936 - 201.072 MHz
+  '8A': 12, '8B': 13, '8C': 14, '8D': 15,
+  // Band 9: 202.928 - 208.064 MHz
+  '9A': 16, '9B': 17, '9C': 18, '9D': 19,
+  // Band 10: 209.936 - 215.072 MHz (includes 10N at index 21)
+  '10A': 20, '10N': 21, '10B': 22, '10C': 23, '10D': 24,
+  // Band 11: 216.928 - 222.064 MHz (includes 11N at index 26)
+  '11A': 25, '11N': 26, '11B': 27, '11C': 28, '11D': 29,
+  // Band 12: 223.936 - 229.072 MHz (includes 12N at index 31)
+  '12A': 30, '12N': 31, '12B': 32, '12C': 33, '12D': 34,
+  // Band 13: 230.784 - 239.200 MHz
+  '13A': 35, '13B': 36, '13C': 37, '13D': 38, '13E': 39, '13F': 40
 };
 
 const FREQ_TO_BLOCK = Object.fromEntries(
