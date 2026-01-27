@@ -337,8 +337,13 @@ async function bootDab() {
 
 async function tuneFrequencyIndex(frequencyIndex) {
   const idx = parseFrequencyIndex(frequencyIndex);
-  // -f <index> + -j
-  return runRadioCli(["-f", String(idx), "-j"]);
+  // -y loads frequency list (required!), -f <index> tunes, -j requests JSON
+  if (fs.existsSync(FREQ_LIST_PATH)) {
+    return runRadioCli(["-y", FREQ_LIST_PATH, "-f", String(idx), "-j"]);
+  } else {
+    logWarn(`Frequency list not found at ${FREQ_LIST_PATH}, tuning may fail`);
+    return runRadioCli(["-f", String(idx), "-j"]);
+  }
 }
 
 async function tuneBlock(block) {
