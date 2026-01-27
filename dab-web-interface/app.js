@@ -34,13 +34,16 @@ const path = require("path");
 const http = require("http");
 const express = require("express");
 const { Server } = require("socket.io");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 
 // -----------------------------
 // Configuration
 // -----------------------------
 
 const RADIO_CLI_PATH = process.env.RADIO_CLI_PATH || "/usr/local/sbin/radio_cli";
+
+// Audio device for VU meter (I2S output)
+const AUDIO_DEVICE = process.env.AUDIO_DEVICE || "sysdefault:CARD=dabboard";
 
 // Timeouts
 const RADIO_CLI_TIMEOUT_MS = Number(process.env.RADIO_CLI_TIMEOUT_MS || 30_000);
@@ -99,8 +102,42 @@ function logErr(err) {
   }
 }
 
+function logInfo(msg) {
+  appendLog(`[${nowIso()}] INFO: ${msg}`);
+  console.log(`[INFO] ${msg}`);
+}
+
+function logWarn(msg) {
+  appendLog(`[${nowIso()}] WARN: ${msg}`);
+  console.warn(`[WARN] ${msg}`);
+}
+
 function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
+}
+
+/**
+ * Check if radio_cli binary exists and is executable
+ */
+function checkRadioCliExists() {
+  try {
+    fs.accessSync(RADIO_CLI_PATH, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if arecord is available
+ */
+function checkArecordExists() {
+  try {
+    execSync("which arecord", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseIntStrict(value, name) {
@@ -159,6 +196,35 @@ function parseMultiJson(stdout) {
 }
 
 /**
+ * Safely get a numeric value from an object, handling various formats
+ */
+function safeGetNumber(obj, ...keys) {
+  for (const key of keys) {
+    if (obj && obj[key] !== undefined && obj[key] !== null) {
+      const val = obj[key];
+      if (typeof val === "number") return val;
+      if (typeof val === "string") {
+        const parsed = parseFloat(val);
+        if (!isNaN(parsed)) return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Safely get a string value from an object, trying multiple keys
+ */
+function safeGetString(obj, ...keys) {
+  for (const key of keys) {
+    if (obj && obj[key] !== undefined && obj[key] !== null) {
+      return String(obj[key]);
+    }
+  }
+  return null;
+}
+
+/**
  * Runs radio_cli with timeout.
  * Returns { stdout, stderr, code }.
  */
@@ -172,11 +238,18 @@ function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } 
       );
     }
 
+    if (!checkRadioCliExists()) {
+      return reject(
+        new Error(`radio_cli not found at ${RADIO_CLI_PATH}. Run ugreen_install.sh first.`)
+      );
+    }
+
     ensureDir(cwd);
     logCmd(RADIO_CLI_PATH, args);
 
     let stdout = "";
     let stderr = "";
+    let killed = false;
 
     const child = spawn(RADIO_CLI_PATH, args, {
       cwd,
@@ -184,6 +257,7 @@ function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } 
     });
 
     const timer = setTimeout(() => {
+      killed = true;
       try { child.kill("SIGKILL"); } catch {}
       const err = new Error(`radio_cli timeout after ${Math.round(timeoutMs / 1000)}s`);
       err.code = "ETIMEDOUT";
@@ -203,6 +277,7 @@ function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } 
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (killed) return; // Already rejected by timeout
       logOut(stdout);
       logErr(stderr);
       resolve({ stdout, stderr, code });
@@ -225,6 +300,10 @@ const BLOCK_TO_FREQ = {
   '12A': 38, '12B': 39, '12C': 40, '12D': 41, '12E': 42, '12F': 43,
   '13A': 44, '13B': 45, '13C': 46, '13D': 47, '13E': 48, '13F': 49
 };
+
+const FREQ_TO_BLOCK = Object.fromEntries(
+  Object.entries(BLOCK_TO_FREQ).map(([k, v]) => [v, k])
+);
 
 // -----------------------------
 // radio_cli actions (real flags)
@@ -255,12 +334,37 @@ async function getEnsembleInfo() {
   const trimmed = String(res.stdout || "").trim();
   if (!trimmed) return { raw: "" };
 
-  // some versions output a JSON line, others multiple
+  // Try parsing as single JSON object
   const one = safeJsonParse(trimmed);
-  if (one) return one;
+  if (one) {
+    return normalizeEnsembleInfo(one);
+  }
 
+  // Try parsing as multiple JSON lines
   const many = parseMultiJson(res.stdout);
-  return many.length ? many[many.length - 1] : { raw: trimmed };
+  if (many.length) {
+    return normalizeEnsembleInfo(many[many.length - 1]);
+  }
+
+  return { raw: trimmed };
+}
+
+/**
+ * Normalize ensemble info to a consistent format regardless of radio_cli version
+ */
+function normalizeEnsembleInfo(obj) {
+  if (!obj || typeof obj !== "object") return { raw: String(obj) };
+
+  return {
+    // Try various possible key names for ensemble/mux name
+    ensemble: safeGetString(obj, "ensemble", "ensemble_label", "mux", "mux_name", "label", "name"),
+    // Try various possible key names for SNR
+    snr: safeGetNumber(obj, "snr", "SNR", "signal_noise_ratio", "snr_db"),
+    // Try various possible key names for signal strength
+    rssi: safeGetNumber(obj, "rssi", "RSSI", "signal_strength", "signal"),
+    // Keep the raw object for debugging
+    raw: obj
+  };
 }
 
 async function listServices() {
@@ -269,12 +373,43 @@ async function listServices() {
   const trimmed = String(res.stdout || "").trim();
   if (!trimmed) return { services: [], raw: "" };
 
-  // sometimes it's one big JSON, sometimes multiple lines
+  // Try parsing as single JSON (could be array or object)
   const one = safeJsonParse(trimmed);
-  if (one) return { services: one };
+  if (one) {
+    // If it's already an array, normalize each service
+    if (Array.isArray(one)) {
+      return { services: one.map(normalizeService) };
+    }
+    // If it's an object with a services array inside
+    if (one.services && Array.isArray(one.services)) {
+      return { services: one.services.map(normalizeService) };
+    }
+    // Single service object
+    return { services: [normalizeService(one)] };
+  }
 
+  // Try parsing as multiple JSON lines
   const many = parseMultiJson(res.stdout);
-  return { services: many.length ? many : [], raw: trimmed };
+  if (many.length) {
+    return { services: many.map(normalizeService) };
+  }
+
+  return { services: [], raw: trimmed };
+}
+
+/**
+ * Normalize service object to consistent format
+ */
+function normalizeService(obj) {
+  if (!obj || typeof obj !== "object") return { id: String(obj), label: String(obj) };
+
+  return {
+    id: safeGetString(obj, "id", "service_id", "serviceId", "sid", "ID") || "0",
+    label: safeGetString(obj, "label", "name", "service_name", "serviceName", "Label", "Name") || "Unknown",
+    componentId: safeGetString(obj, "component_id", "componentId", "cid") || "0",
+    // Keep original for debugging
+    raw: obj
+  };
 }
 
 async function selectService(serviceId, componentId = 0) {
@@ -312,8 +447,115 @@ async function fullScan() {
 }
 
 // -----------------------------
-// Server
+// Audio Monitor
 // -----------------------------
+
+/**
+ * Start audio level monitoring using arecord
+ * Returns an object with stop() method
+ */
+function createAudioMonitor(onLevel, onError) {
+  if (!checkArecordExists()) {
+    onError(new Error("arecord not found. Install alsa-utils package."));
+    return null;
+  }
+
+  const proc = spawn("arecord", [
+    "-D", AUDIO_DEVICE,
+    "-c", "2",
+    "-r", "48000",
+    "-f", "S16_LE",
+    "-vv"
+  ]);
+
+  let buffer = "";
+  let stopped = false;
+
+  proc.on("error", (err) => {
+    if (!stopped) {
+      logErr(`arecord error: ${err.message}`);
+      onError(new Error(`Failed to start audio monitor: ${err.message}`));
+    }
+  });
+
+  proc.stderr.on("data", (data) => {
+    if (stopped) return;
+
+    buffer += data.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      // arecord -vv outputs lines like:
+      // "Max peak (12000 samples): 0x00007fff 0x00007fff"
+      // or with VU meter: "###############            89%"
+      // or: "Peak    0.95       -0.91 dB"
+
+      // Try percentage format first (most common with -vv)
+      let match = line.match(/(\d+)%/);
+      if (match) {
+        const level = parseInt(match[1], 10) / 100;
+        onLevel(Math.max(0, Math.min(1, level)));
+        continue;
+      }
+
+      // Try decimal peak format
+      match = line.match(/Peak\s+([0-9.]+)/i);
+      if (match) {
+        const level = parseFloat(match[1]);
+        if (!isNaN(level)) {
+          onLevel(Math.max(0, Math.min(1, level)));
+          continue;
+        }
+      }
+
+      // Try hex peak format (convert to percentage)
+      match = line.match(/0x([0-9a-fA-F]+)/);
+      if (match) {
+        const hexVal = parseInt(match[1], 16);
+        const level = hexVal / 0x7fff; // 16-bit signed max
+        onLevel(Math.max(0, Math.min(1, level)));
+      }
+    }
+  });
+
+  proc.on("close", (code) => {
+    if (!stopped && code !== 0) {
+      logWarn(`arecord exited with code ${code}`);
+    }
+  });
+
+  return {
+    stop() {
+      stopped = true;
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+    }
+  };
+}
+
+// -----------------------------
+// Server Initialization
+// -----------------------------
+
+// Pre-flight checks
+logInfo("Starting uGreen DAB Web Interface...");
+
+if (!isRoot()) {
+  logWarn("Server not running as root. radio_cli commands will fail.");
+  console.warn("WARNING: Server not running as root. radio_cli commands will fail.");
+}
+
+if (!checkRadioCliExists()) {
+  logWarn(`radio_cli not found at ${RADIO_CLI_PATH}. Run ugreen_install.sh first.`);
+  console.warn(`WARNING: radio_cli not found at ${RADIO_CLI_PATH}`);
+}
+
+if (!checkArecordExists()) {
+  logWarn("arecord not found. Audio monitoring will not work. Install alsa-utils.");
+  console.warn("WARNING: arecord not found. Audio monitoring disabled.");
+}
 
 ensureDir(LOG_DIR);
 ensureDir(DATA_DIR);
@@ -322,12 +564,28 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// Health check endpoint
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     root: isRoot(),
     radioCliPath: RADIO_CLI_PATH,
+    radioCliExists: checkRadioCliExists(),
+    arecordExists: checkArecordExists(),
     time: nowIso(),
+  });
+});
+
+// API endpoint to get current status
+app.get("/api/status", (_req, res) => {
+  res.json({
+    root: isRoot(),
+    radioCliPath: RADIO_CLI_PATH,
+    radioCliExists: checkRadioCliExists(),
+    audioDevice: AUDIO_DEVICE,
+    arecordExists: checkArecordExists(),
+    logDir: LOG_DIR,
+    dataDir: DATA_DIR,
   });
 });
 
@@ -335,12 +593,16 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 io.on("connection", (socket) => {
+  logInfo(`Client connected: ${socket.id}`);
+
   socket.emit("status", {
     ok: true,
     message: "Connected",
     detail: {
       root: isRoot(),
       radioCliPath: RADIO_CLI_PATH,
+      radioCliExists: checkRadioCliExists(),
+      arecordExists: checkArecordExists(),
       time: nowIso(),
     },
   });
@@ -351,6 +613,7 @@ io.on("connection", (socket) => {
     logErr(msg);
   };
 
+  // Scan all DAB blocks
   socket.on("scanAllBlocks", async () => {
     try {
       await bootDab();
@@ -366,7 +629,8 @@ io.on("connection", (socket) => {
               block,
               result: {
                 mux: info.ensemble,
-                snr: info.snr || 0
+                snr: info.snr || 0,
+                rssi: info.rssi || null
               },
               error: null
             });
@@ -390,8 +654,14 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Scan a single block
   socket.on("scanBlock", async (block) => {
     try {
+      // Validate block name
+      if (!BLOCK_TO_FREQ.hasOwnProperty(block)) {
+        throw new Error(`Invalid block name: ${block}`);
+      }
+
       await bootDab();
       await tuneBlock(block);
       const info = await getEnsembleInfo().catch(() => null);
@@ -401,7 +671,8 @@ io.on("connection", (socket) => {
           block,
           result: {
             mux: info.ensemble,
-            snr: info.snr || 0
+            snr: info.snr || 0,
+            rssi: info.rssi || null
           },
           error: null
         });
@@ -421,6 +692,7 @@ io.on("connection", (socket) => {
     }
   });
 
+  // List services on current tuned multiplex
   socket.on("listServices", async () => {
     try {
       const result = await listServices();
@@ -432,16 +704,28 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("selectService", async (serviceId) => {
+  // Select a service by ID
+  socket.on("selectService", async (data) => {
     try {
+      // Handle both formats: just serviceId or { serviceId, componentId }
+      let serviceId, componentId = 0;
+      if (typeof data === "object" && data !== null) {
+        serviceId = data.serviceId || data.id || data;
+        componentId = data.componentId || 0;
+      } else {
+        serviceId = data;
+      }
+
       const sid = parseServiceId(serviceId);
-      await selectService(sid, 0);
-      socket.emit("serviceSelected", { success: true });
+      const cid = parseComponentId(componentId);
+      await selectService(sid, cid);
+      socket.emit("serviceSelected", { success: true, serviceId: sid });
     } catch (err) {
       socket.emit("serviceSelected", { success: false, error: err.message });
     }
   });
 
+  // Get metadata (DLS text) for current service
   socket.on("getMetadata", async () => {
     try {
       const text = await getStationText(3);
@@ -455,11 +739,13 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Get server logs
   socket.on("getLogs", async () => {
     try {
       if (fs.existsSync(LOG_PATH)) {
         const logs = fs.readFileSync(LOG_PATH, "utf8");
         const lines = logs.split("\n");
+        // Return last 500 lines
         const lastLines = lines.slice(-500).join("\n");
         socket.emit("logs", lastLines);
       } else {
@@ -470,66 +756,66 @@ io.on("connection", (socket) => {
     }
   });
 
-  let audioMonitorProcess = null;
+  // Audio monitoring
+  let audioMonitor = null;
 
   socket.on("startAudioMonitor", () => {
-    try {
-      if (audioMonitorProcess) return;
+    if (audioMonitor) {
+      return; // Already running
+    }
 
-      audioMonitorProcess = spawn("arecord", [
-        "-D", "sysdefault:CARD=dabboard",
-        "-c", "2",
-        "-r", "48000",
-        "-f", "S16_LE",
-        "-vv"
-      ]);
+    audioMonitor = createAudioMonitor(
+      (level) => {
+        socket.emit("audioLevel", level);
+      },
+      (err) => {
+        socket.emit("error", { message: `Audio monitor error: ${err.message}` });
+        audioMonitor = null;
+      }
+    );
 
-      let buffer = "";
-      audioMonitorProcess.stderr.on("data", (data) => {
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          const match = line.match(/(\d+)%/);
-          if (match) {
-            const level = parseInt(match[1], 10) / 100;
-            socket.emit("audioLevel", level);
-          }
-        }
-      });
-
-      audioMonitorProcess.on("close", () => {
-        audioMonitorProcess = null;
-      });
-    } catch (err) {
-      sendError(err);
+    if (!audioMonitor) {
+      socket.emit("error", { message: "Failed to start audio monitor" });
     }
   });
 
   socket.on("stopAudioMonitor", () => {
-    if (audioMonitorProcess) {
-      audioMonitorProcess.kill();
-      audioMonitorProcess = null;
+    if (audioMonitor) {
+      audioMonitor.stop();
+      audioMonitor = null;
     }
   });
 
+  // Cleanup on disconnect
   socket.on("disconnect", () => {
-    if (audioMonitorProcess) {
-      audioMonitorProcess.kill();
-      audioMonitorProcess = null;
+    logInfo(`Client disconnected: ${socket.id}`);
+    if (audioMonitor) {
+      audioMonitor.stop();
+      audioMonitor = null;
     }
   });
 });
 
 server.listen(PORT, HOST, () => {
-  appendLog(`[${nowIso()}] Server listening on http://${HOST}:${PORT}`);
-  console.log(`Server listening on http://${HOST}:${PORT}`);
+  const msg = `Server listening on http://${HOST}:${PORT}`;
+  appendLog(`[${nowIso()}] ${msg}`);
+  console.log(msg);
 });
 
 // Clean shutdown
-function shutdown() {
-  server.close(() => process.exit(0));
+function shutdown(signal) {
+  logInfo(`Received ${signal}, shutting down...`);
+  server.close(() => {
+    logInfo("Server closed");
+    process.exit(0);
+  });
+
+  // Force exit after 5 seconds
+  setTimeout(() => {
+    logWarn("Forced shutdown after timeout");
+    process.exit(1);
+  }, 5000);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
