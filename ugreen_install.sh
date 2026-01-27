@@ -18,7 +18,6 @@ WEB_PORT="${WEB_PORT:-9595}"
 WEB_ROOT="/opt/dab-web-interface"
 SERVICE_NAME="dab-webserver"
 
-SERVICE_USER="dabweb"
 LOG_DIR="/var/log/dab-web-interface"
 LOG_FILE="${LOG_DIR}/radio.log"
 
@@ -62,30 +61,13 @@ install_deps() {
   fi
 }
 
-create_user_and_perms() {
-  msg "Création utilisateur système ${SERVICE_USER} + permissions (spi/gpio)…"
-  if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}"
-  fi
-
-  # Groupes utiles (selon distro)
-  getent group spi >/dev/null && usermod -aG spi "${SERVICE_USER}" || true
-  getent group gpio >/dev/null && usermod -aG gpio "${SERVICE_USER}" || true
-
-  # Logs
+create_log_dirs() {
+  msg "Création des dossiers de logs et données…"
   mkdir -p "${LOG_DIR}"
+  mkdir -p /var/lib/dab-web-interface
   touch "${LOG_FILE}"
-  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${LOG_DIR}"
-  chmod 750 "${LOG_DIR}"
-  chmod 640 "${LOG_FILE}"
-
-  # Sudoers: autoriser radio_cli sans mot de passe
-  msg "Configuration sudoers pour permettre à ${SERVICE_USER} d’exécuter radio_cli en root…"
-  cat > /etc/sudoers.d/dab-web-interface <<EOF
-${SERVICE_USER} ALL=(root) NOPASSWD: ${RADIO_CLI_SYMLINK}
-Defaults!${RADIO_CLI_SYMLINK} !requiretty
-EOF
-  chmod 440 /etc/sudoers.d/dab-web-interface
+  chmod 755 "${LOG_DIR}"
+  chmod 644 "${LOG_FILE}"
 }
 
 download_ugreen() {
@@ -148,39 +130,10 @@ deploy_web_interface() {
     exit 1
   fi
 
-  # Fix log path: l’app veut écrire /opt/dab-web-interface/radio.log
-  # On lui donne un symlink vers /var/log/… (écrit par dabweb).
-  ln -sf "${LOG_FILE}" "${WEB_ROOT}/radio.log"
-  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${WEB_ROOT}"
-
   msg "Installation npm (prod)…"
   ( cd "${WEB_ROOT}" && npm install --production )
 }
 
-patch_app_js() {
-  # On corrige les trucs évidents:
-  # - option invalide --list-services -> -g
-  # - si le code appelle radio_cli sans sudo, on préfixe
-  msg "Patch rapide app.js (options et sudo)…"
-
-  if [[ ! -f "${WEB_ROOT}/app.js" ]]; then
-    echo "Warning: ${WEB_ROOT}/app.js introuvable, patch ignoré."
-    return 0
-  fi
-
-  # 1) --list-services => -g
-  sed -i 's/--list-services/-g/g' "${WEB_ROOT}/app.js"
-
-  # 2) Option boot: si ton app utilise --boot=D, radio_cli attend -b D
-  # (ton log montrait --boot=D)
-  sed -i 's/--boot=\([A-Za-z]\)/-b \1/g' "${WEB_ROOT}/app.js"
-
-  # 3) Préfixe sudo si la commande contient "/usr/local/sbin/radio_cli" et pas déjà sudo
-  # (patch simple: remplace "CMD: /usr/local/sbin/radio_cli" côté code souvent construit en string)
-  # On vise surtout les constructions type: const cmd = "/usr/local/sbin/radio_cli ..."
-  sed -i 's#"\(/usr/local/sbin/radio_cli\)#"sudo \1#g' "${WEB_ROOT}/app.js"
-  sed -i "s#'\\(/usr/local/sbin/radio_cli\\)#'sudo \\1#g" "${WEB_ROOT}/app.js"
-}
 
 create_service() {
   msg "Création service systemd ${SERVICE_NAME}…"
@@ -193,16 +146,18 @@ After=network.target
 [Service]
 Type=simple
 Environment=PORT=${WEB_PORT}
+Environment=RADIO_CLI_PATH=${RADIO_CLI_SYMLINK}
+Environment=LOG_DIR=${LOG_DIR}
+Environment=DATA_DIR=/var/lib/dab-web-interface
 WorkingDirectory=${WEB_ROOT}
 ExecStart=/usr/bin/node ${WEB_ROOT}/app.js
 Restart=always
 RestartSec=2
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
+User=root
+Group=root
 
-# Sécurité de base (sans casser sudo/radio_cli)
-NoNewPrivileges=true
-PrivateTmp=true
+# Permissions I2C/SPI
+SupplementaryGroups=spi gpio i2c
 
 [Install]
 WantedBy=multi-user.target
@@ -219,7 +174,7 @@ final_msg() {
   msg "Terminé."
   echo "WebUI: http://${ip}:${WEB_PORT}/"
   echo "Service: systemctl status ${SERVICE_NAME}"
-  echo "Test radio_cli (via sudo autorisé pour ${SERVICE_USER}): sudo -u ${SERVICE_USER} sudo ${RADIO_CLI_SYMLINK} --help >/dev/null && echo OK"
+  echo "Logs: journalctl -u ${SERVICE_NAME} -f"
 }
 
 # --------------------
@@ -236,9 +191,8 @@ case "${ans}" in
 esac
 
 install_deps
-create_user_and_perms
+create_log_dirs
 download_ugreen
 deploy_web_interface
-patch_app_js
 create_service
 final_msg

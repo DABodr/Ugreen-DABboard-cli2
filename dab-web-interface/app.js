@@ -211,6 +211,22 @@ function runRadioCli(args, { timeoutMs = RADIO_CLI_TIMEOUT_MS, cwd = DATA_DIR } 
 }
 
 // -----------------------------
+// Block to frequency index mapping
+// -----------------------------
+
+const BLOCK_TO_FREQ = {
+  '5A': 0, '5B': 1, '5C': 2, '5D': 3,
+  '6A': 4, '6B': 5, '6C': 6, '6D': 7,
+  '7A': 8, '7B': 9, '7C': 10, '7D': 11, '7E': 12, '7F': 13,
+  '8A': 14, '8B': 15, '8C': 16, '8D': 17, '8E': 18, '8F': 19,
+  '9A': 20, '9B': 21, '9C': 22, '9D': 23, '9E': 24, '9F': 25,
+  '10A': 26, '10B': 27, '10C': 28, '10D': 29, '10E': 30, '10F': 31,
+  '11A': 32, '11B': 33, '11C': 34, '11D': 35, '11E': 36, '11F': 37,
+  '12A': 38, '12B': 39, '12C': 40, '12D': 41, '12E': 42, '12F': 43,
+  '13A': 44, '13B': 45, '13C': 46, '13D': 47, '13E': 48, '13F': 49
+};
+
+// -----------------------------
 // radio_cli actions (real flags)
 // -----------------------------
 
@@ -223,6 +239,14 @@ async function tuneFrequencyIndex(frequencyIndex) {
   const idx = parseFrequencyIndex(frequencyIndex);
   // -f <index> + -j
   return runRadioCli(["-f", String(idx), "-j"]);
+}
+
+async function tuneBlock(block) {
+  const idx = BLOCK_TO_FREQ[block];
+  if (idx === undefined) {
+    throw new Error(`Unknown block: ${block}`);
+  }
+  return tuneFrequencyIndex(idx);
 }
 
 async function getEnsembleInfo() {
@@ -327,68 +351,173 @@ io.on("connection", (socket) => {
     logErr(msg);
   };
 
-  socket.on("boot", async () => {
+  socket.on("scanAllBlocks", async () => {
     try {
       await bootDab();
-      socket.emit("status", { ok: true, message: "Boot OK" });
+      const blocks = Object.keys(BLOCK_TO_FREQ);
+
+      for (const block of blocks) {
+        try {
+          await tuneBlock(block);
+          const info = await getEnsembleInfo().catch(() => null);
+
+          if (info && info.ensemble) {
+            socket.emit("blockResult", {
+              block,
+              result: {
+                mux: info.ensemble,
+                snr: info.snr || 0
+              },
+              error: null
+            });
+          } else {
+            socket.emit("blockResult", {
+              block,
+              result: null,
+              error: "No signal"
+            });
+          }
+        } catch (err) {
+          socket.emit("blockResult", {
+            block,
+            result: null,
+            error: err.message
+          });
+        }
+      }
     } catch (err) {
       sendError(err);
     }
   });
 
-  socket.on("tune", async (payload) => {
+  socket.on("scanBlock", async (block) => {
     try {
-      const idx = parseFrequencyIndex(payload?.frequencyIndex);
-      await tuneFrequencyIndex(idx);
-
-      // optional info
+      await bootDab();
+      await tuneBlock(block);
       const info = await getEnsembleInfo().catch(() => null);
-      if (info) socket.emit("ensembleInfo", info);
 
-      socket.emit("status", { ok: true, message: `Tuned to frequency index ${idx}` });
+      if (info && info.ensemble) {
+        socket.emit("blockResult", {
+          block,
+          result: {
+            mux: info.ensemble,
+            snr: info.snr || 0
+          },
+          error: null
+        });
+      } else {
+        socket.emit("blockResult", {
+          block,
+          result: null,
+          error: "No signal"
+        });
+      }
     } catch (err) {
-      sendError(err);
-    }
-  });
-
-  socket.on("fullScan", async () => {
-    try {
-      socket.emit("status", { ok: true, message: "Full scan started… (can take a while)" });
-      const scan = await fullScan();
-      socket.emit("blockResult", { scan });
-      socket.emit("status", { ok: true, message: "Full scan finished" });
-    } catch (err) {
-      sendError(err);
+      socket.emit("blockResult", {
+        block,
+        result: null,
+        error: err.message
+      });
     }
   });
 
   socket.on("listServices", async () => {
     try {
       const result = await listServices();
-      socket.emit("services", result);
+      const services = Array.isArray(result.services) ? result.services : [];
+      socket.emit("services", services);
+    } catch (err) {
+      socket.emit("services", []);
+      sendError(err);
+    }
+  });
+
+  socket.on("selectService", async (serviceId) => {
+    try {
+      const sid = parseServiceId(serviceId);
+      await selectService(sid, 0);
+      socket.emit("serviceSelected", { success: true });
+    } catch (err) {
+      socket.emit("serviceSelected", { success: false, error: err.message });
+    }
+  });
+
+  socket.on("getMetadata", async () => {
+    try {
+      const text = await getStationText(3);
+      socket.emit("metadata", {
+        dls: text.text || "",
+        dlPlus: "",
+        sls: ""
+      });
+    } catch (err) {
+      socket.emit("metadata", { error: err.message });
+    }
+  });
+
+  socket.on("getLogs", async () => {
+    try {
+      if (fs.existsSync(LOG_PATH)) {
+        const logs = fs.readFileSync(LOG_PATH, "utf8");
+        const lines = logs.split("\n");
+        const lastLines = lines.slice(-500).join("\n");
+        socket.emit("logs", lastLines);
+      } else {
+        socket.emit("logs", "Aucun log disponible");
+      }
+    } catch (err) {
+      socket.emit("logs", `Erreur lors de la lecture des logs: ${err.message}`);
+    }
+  });
+
+  let audioMonitorProcess = null;
+
+  socket.on("startAudioMonitor", () => {
+    try {
+      if (audioMonitorProcess) return;
+
+      audioMonitorProcess = spawn("arecord", [
+        "-D", "sysdefault:CARD=dabboard",
+        "-c", "2",
+        "-r", "48000",
+        "-f", "S16_LE",
+        "-vv"
+      ]);
+
+      let buffer = "";
+      audioMonitorProcess.stderr.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const match = line.match(/(\d+)%/);
+          if (match) {
+            const level = parseInt(match[1], 10) / 100;
+            socket.emit("audioLevel", level);
+          }
+        }
+      });
+
+      audioMonitorProcess.on("close", () => {
+        audioMonitorProcess = null;
+      });
     } catch (err) {
       sendError(err);
     }
   });
 
-  socket.on("selectService", async (payload) => {
-    try {
-      const serviceId = parseServiceId(payload?.serviceId);
-      const componentId = parseComponentId(payload?.componentId);
-      await selectService(serviceId, componentId);
-      socket.emit("serviceSelected", { serviceId, componentId });
-    } catch (err) {
-      sendError(err);
+  socket.on("stopAudioMonitor", () => {
+    if (audioMonitorProcess) {
+      audioMonitorProcess.kill();
+      audioMonitorProcess = null;
     }
   });
 
-  socket.on("getStationText", async (payload) => {
-    try {
-      const wt = parseWaitTimeSeconds(payload?.waitTimeSeconds);
-      const text = await getStationText(wt);
-      socket.emit("stationText", text);
-    } catch (err) {
-      sendError(err);
+  socket.on("disconnect", () => {
+    if (audioMonitorProcess) {
+      audioMonitorProcess.kill();
+      audioMonitorProcess = null;
     }
   });
 });

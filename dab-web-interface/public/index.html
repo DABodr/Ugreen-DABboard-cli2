@@ -368,6 +368,7 @@
 
       socket.on('services', (list) => {
         servicesEl.innerHTML = '';
+        loadingIndicator.classList.remove('active');
         if (!list || list.length === 0) {
           muxNameEl.textContent = 'Aucun service disponible pour ce bloc.';
           return;
@@ -469,6 +470,12 @@
           document.documentElement.classList.remove('dark-theme');
           localStorage.setItem('theme', 'default');
         }
+      });
+
+      // Error handling
+      socket.on('error', (data) => {
+        loadingIndicator.classList.remove('active');
+        alert('Erreur: ' + data.message);
       });
     </script>
   </body>
