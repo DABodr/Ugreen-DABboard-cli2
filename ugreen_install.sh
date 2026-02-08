@@ -1,410 +1,199 @@
 #!/bin/bash
 #
-# ugreen_install.sh – automated setup for the uGreen DAB board + Node web interface
+# ugreen_install.sh – automated setup for the uGreen DAB board and web interface
 #
-# This script:
-# - Downloads and installs uGreen radio_cli binaries
-# - Installs Node.js and dependencies
-# - Deploys the web interface
-# - Creates a systemd service
-#
-set -euo pipefail
+# This script automates the installation of the proprietary uGreen DAB
+# software alongside the Node.js based web interface provided in this
+# repository.  It must be run with root privileges on a Debian/Raspbian
+# system such as Raspberry Pi OS.  The procedure below is largely based
+# on the commands published in uGreen’s FAQ, which instructs users to
+# download the Files_v12 archive, extract it to /usr/local/lib and
+# create symlinks to radio_cli and DABBoardRadio【713877084488398†L108-L116】.  Additional steps have been
+# added to install dependencies such as wiringPi and libncurses5, set
+# up Node.js, copy the web interface and register it as a service on
+# port 9595.  You can customise the variables near the top of this
+# script to suit a different version or architecture.
 
-# --------------------
-# Variables
-# --------------------
-FILES_URL="${FILES_URL:-https://ugreen.eu/wp-content/uploads/files/Files_v16.zip}"
-FILES_NAME="Files_v16.zip"
+set -e
 
+# Variables (edit these if new versions become available)
+FILES_URL="https://ugreen.eu/wp-content/uploads/files/Files_v12.zip"
+FILES_NAME="Files_v12.zip"
 INSTALL_DIR="/usr/local/lib/ugreen-dab+"
 RADIO_CLI_SYMLINK="/usr/local/sbin/radio_cli"
 DAB_RADIO_SYMLINK="/usr/local/sbin/DABBoardRadio"
-
-WEB_PORT="${WEB_PORT:-9595}"
+WEB_PORT=9595
 WEB_ROOT="/opt/dab-web-interface"
 SERVICE_NAME="dab-webserver"
 
-LOG_DIR="/var/log/dab-web-interface"
-DATA_DIR="/var/lib/dab-web-interface"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# --------------------
-# Helpers
-# --------------------
-need_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    echo -e "${RED}Erreur: lance ce script en root (sudo ./ugreen_install.sh).${NC}"
+download_ugreen() {
+  echo "Downloading uGreen DAB software from $FILES_URL…"
+  wget -O "/tmp/$FILES_NAME" "$FILES_URL"
+  echo "Extracting…"
+  unzip -o "/tmp/$FILES_NAME" -d /usr/local/lib
+  # After extraction, uGreen’s archive may unpack as DABBoard/ instead of Files_v12.
+  # Detect the extracted directory name.  If multiple directories are present
+  # (e.g. during an update), prefer the one containing radio_cli.
+  extracted_dir=""
+  if [ -d "/usr/local/lib/DABBoard" ]; then
+    extracted_dir="/usr/local/lib/DABBoard"
+  elif [ -d "/usr/local/lib/${FILES_NAME%.zip}" ]; then
+    extracted_dir="/usr/local/lib/${FILES_NAME%.zip}"
+  else
+    # Fallback: choose the first directory containing radio_cli
+    for d in /usr/local/lib/*; do
+      if [ -d "$d" ] && compgen -G "$d/radio_cli*" >/dev/null; then
+        extracted_dir="$d"
+        break
+      fi
+    done
+  fi
+  if [ -z "$extracted_dir" ]; then
+    echo "Error: could not locate extracted uGreen directory after unzip." >&2
     exit 1
   fi
-}
+  # Move or rename the extracted directory into the installation directory.  If
+  # INSTALL_DIR already exists, remove it first to avoid mixing versions.
+  if [ -d "$INSTALL_DIR" ]; then
+    rm -rf "$INSTALL_DIR"
+  fi
+  mv -f "$extracted_dir" "$INSTALL_DIR"
 
-msg() { echo -e "\n${GREEN}==> $*${NC}"; }
-warn() { echo -e "${YELLOW}Warning: $*${NC}"; }
-err() { echo -e "${RED}Error: $*${NC}" >&2; }
-
-# Detect architecture and return the expected directory name
-arch_pick() {
-  local arch
+  # The uGreen archive contains multiple versions of the binaries for
+  # different CPU architectures (e.g. 32‑bit arm, 64‑bit arm, x86_64).
+  # Choose the correct binary for this system based on the output
+  # of `uname -m`.  As documented in the uGreen I2S guide, a 64‑bit
+  # Raspberry Pi requires the 64‑bit version of radio_cli【487981551829083†L124-L136】.
   arch="$(uname -m)"
-  case "$arch" in
-    aarch64|arm64) echo "64-bit" ;;
-    armv7l|armv7*|armhf|arm) echo "32-bit" ;;
-    x86_64|amd64) echo "64-bit" ;;
-    i386|i686) echo "32-bit" ;;
-    *)
-      warn "Unknown architecture: $arch, defaulting to 64-bit"
-      echo "64-bit"
-      ;;
-  esac
-}
-
-# Find a binary matching a pattern in a directory
-# Returns the path to the most recent version if multiple exist
-find_binary() {
-  local dir="$1"
-  local pattern="$2"
-  
-  if [[ ! -d "$dir" ]]; then
-    return 1
+  radio_cli_bin=""
+  dab_radio_bin=""
+  # Iterate over all radio_cli* files and pick the first that matches
+  # the detected architecture.  Fallback to the plain radio_cli if no
+  # architecture suffix is found.
+  for candidate in "$INSTALL_DIR"/radio_cli*; do
+    case "${candidate##*/}" in
+      *64*|*aarch64*)
+        if [[ "$arch" == aarch64* ]]; then radio_cli_bin="$candidate"; fi;;
+      *32*|*armv7*|*armhf*)
+        if [[ "$arch" == armv7* || "$arch" == arm* ]]; then radio_cli_bin="$candidate"; fi;;
+      *x86_64*)
+        if [[ "$arch" == x86_64* ]]; then radio_cli_bin="$candidate"; fi;;
+      *)
+        # Default fallback (no suffix)
+        if [ -z "$radio_cli_bin" ]; then radio_cli_bin="$candidate"; fi;;
+    esac
+  done
+  # Similarly choose the correct DABBoardRadio binary.
+  for candidate in "$INSTALL_DIR"/DABBoardRadio*; do
+    case "${candidate##*/}" in
+      *64*|*aarch64*)
+        if [[ "$arch" == aarch64* ]]; then dab_radio_bin="$candidate"; fi;;
+      *32*|*armv7*|*armhf*)
+        if [[ "$arch" == armv7* || "$arch" == arm* ]]; then dab_radio_bin="$candidate"; fi;;
+      *x86_64*)
+        if [[ "$arch" == x86_64* ]]; then dab_radio_bin="$candidate"; fi;;
+      *)
+        if [ -z "$dab_radio_bin" ]; then dab_radio_bin="$candidate"; fi;;
+    esac
+  done
+  # Create symlinks pointing to the selected binaries
+  if [ -n "$radio_cli_bin" ]; then
+    ln -sf "$radio_cli_bin" "$RADIO_CLI_SYMLINK"
+  else
+    echo "Warning: could not determine appropriate radio_cli binary; defaulting to first match."
+    ln -sf "$INSTALL_DIR"/radio_cli* "$RADIO_CLI_SYMLINK"
   fi
-  
-  # Find all matching files and sort by version (assuming format name_vX.Y.Z)
-  local found
-  found=$(find "$dir" -maxdepth 1 -type f -name "${pattern}*" 2>/dev/null | sort -V | tail -1)
-  
-  if [[ -n "$found" && -f "$found" ]]; then
-    echo "$found"
-    return 0
+  if [ -n "$dab_radio_bin" ]; then
+    ln -sf "$dab_radio_bin" "$DAB_RADIO_SYMLINK"
+  else
+    echo "Warning: could not determine appropriate DABBoardRadio binary; defaulting to first match."
+    ln -sf "$INSTALL_DIR"/DABBoardRadio* "$DAB_RADIO_SYMLINK"
   fi
-  
-  return 1
+  echo "uGreen binaries installed in $INSTALL_DIR (architecture: $arch)"
 }
 
 install_deps() {
-  msg "Installation des dépendances système (apt)…"
+  echo "Updating package lists and installing dependencies…"
   apt-get update
-  apt-get install -y --no-install-recommends \
-    ca-certificates curl wget unzip git \
-    libncurses5 alsa-utils
-
-  # Node.js (if not already installed or version too old)
-  local need_node=0
-  if ! command -v node >/dev/null 2>&1; then
-    need_node=1
-  else
-    local node_version
-    node_version=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
-    if [[ -z "$node_version" || "$node_version" -lt 18 ]]; then
-      warn "Node.js version too old (need 18+), upgrading..."
-      need_node=1
-    fi
+  apt-get install -y libncurses5 git unzip curl
+  # arecord/aplay are provided by alsa-utils (for audio monitoring)
+  apt-get install -y alsa-utils
+  # Install wiringPi if gpio command is absent (deprecated on recent systems)
+  if ! command -v gpio >/dev/null 2>&1; then
+    echo "Installing wiringPi library…"
+    git clone https://github.com/WiringPi/WiringPi /tmp/wiringPi
+    (cd /tmp/wiringPi && ./build)
   fi
-
-  if [[ "$need_node" -eq 1 ]]; then
-    msg "Installation de Node.js (NodeSource 20.x)…"
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
-  else
-    msg "Node.js $(node -v) déjà installé."
+  # Enable SPI and GPIO access for non‑root users by adding the current
+  # user to the appropriate groups; this allows the Node.js service to
+  # access /dev/spidev0.* and /dev/gpiomem without running as root.
+  if getent group spi >/dev/null; then
+    usermod -aG spi $(logname)
+  fi
+  if getent group gpio >/dev/null; then
+    usermod -aG gpio $(logname)
   fi
 }
 
-create_dirs() {
-  msg "Création des dossiers de logs et données…"
-  mkdir -p "${LOG_DIR}"
-  mkdir -p "${DATA_DIR}"
-  touch "${LOG_DIR}/radio.log"
-  chmod 755 "${LOG_DIR}" "${DATA_DIR}"
-  chmod 644 "${LOG_DIR}/radio.log"
-}
-
-download_ugreen() {
-  msg "Téléchargement uGreen: ${FILES_URL}"
-  
-  # Clean up previous downloads
-  rm -f "/tmp/${FILES_NAME}"
-  rm -rf /tmp/Files_v*
-  rm -rf /tmp/DABBoard
-  
-  # Download with error handling
-  if ! curl -fL "${FILES_URL}" -o "/tmp/${FILES_NAME}"; then
-    if ! wget -O "/tmp/${FILES_NAME}" "${FILES_URL}"; then
-      err "Échec du téléchargement de ${FILES_URL}"
-      exit 1
-    fi
-  fi
-
-  msg "Extraction de l'archive uGreen…"
-  if ! unzip -o "/tmp/${FILES_NAME}" -d /tmp; then
-    err "Échec de l'extraction de l'archive"
-    exit 1
-  fi
-
-  # Find the extracted directory (could be Files_v16, DABBoard, etc.)
-  local extracted_dir=""
-  for candidate in /tmp/Files_v* /tmp/DABBoard /tmp/ugreen*; do
-    if [[ -d "$candidate" ]]; then
-      extracted_dir="$candidate"
-      break
-    fi
-  done
-
-  if [[ -z "$extracted_dir" || ! -d "$extracted_dir" ]]; then
-    err "Impossible de trouver le dossier extrait dans /tmp"
-    ls -la /tmp/
-    exit 1
-  fi
-
-  msg "Dossier extrait: $extracted_dir"
-
-  # Determine architecture
-  local bitdir
-  bitdir="$(arch_pick)"
-  msg "Architecture détectée: $bitdir"
-
-  # Try to find binaries in various possible locations
-  local bin_search_paths=(
-    "$extracted_dir/bin/${bitdir}"
-    "$extracted_dir/${bitdir}"
-    "$extracted_dir/bin"
-    "$extracted_dir"
-  )
-
-  local src_radio=""
-  local src_dab=""
-
-  # Search for radio_cli binary
-  for search_path in "${bin_search_paths[@]}"; do
-    if [[ -d "$search_path" ]]; then
-      local found
-      found=$(find_binary "$search_path" "radio_cli") || true
-      if [[ -n "$found" ]]; then
-        src_radio="$found"
-        msg "Trouvé radio_cli: $src_radio"
-        break
-      fi
-    fi
-  done
-
-  # Search for DABBoardRadio binary
-  for search_path in "${bin_search_paths[@]}"; do
-    if [[ -d "$search_path" ]]; then
-      local found
-      found=$(find_binary "$search_path" "DABBoardRadio") || true
-      if [[ -n "$found" ]]; then
-        src_dab="$found"
-        msg "Trouvé DABBoardRadio: $src_dab"
-        break
-      fi
-    fi
-  done
-
-  # Validate we found at least radio_cli
-  if [[ -z "$src_radio" || ! -f "$src_radio" ]]; then
-    err "Binaire radio_cli introuvable dans l'archive"
-    echo "Contenu de l'archive:"
-    find "$extracted_dir" -type f -name "*radio*" 2>/dev/null || true
-    exit 1
-  fi
-
-  # DABBoardRadio is optional (warn if not found)
-  if [[ -z "$src_dab" || ! -f "$src_dab" ]]; then
-    warn "DABBoardRadio non trouvé (optionnel)"
-  fi
-
-  msg "Installation dans ${INSTALL_DIR}…"
-  
-  # Clean previous installation
-  rm -rf "${INSTALL_DIR}"
-  mkdir -p "${INSTALL_DIR}"
-
-  # Copy binaries with stable names
-  cp -f "${src_radio}" "${INSTALL_DIR}/radio_cli"
-  chmod 755 "${INSTALL_DIR}/radio_cli"
-
-  if [[ -n "$src_dab" && -f "$src_dab" ]]; then
-    cp -f "${src_dab}" "${INSTALL_DIR}/DABBoardRadio"
-    chmod 755 "${INSTALL_DIR}/DABBoardRadio"
-  fi
-
-  # Create symlinks in /usr/local/sbin
-  ln -sf "${INSTALL_DIR}/radio_cli" "${RADIO_CLI_SYMLINK}"
-  
-  if [[ -f "${INSTALL_DIR}/DABBoardRadio" ]]; then
-    ln -sf "${INSTALL_DIR}/DABBoardRadio" "${DAB_RADIO_SYMLINK}"
-  fi
-
-  # Verify installation
-  msg "Vérification de radio_cli…"
-  if "${RADIO_CLI_SYMLINK}" --help >/dev/null 2>&1; then
-    msg "radio_cli fonctionne correctement ✓"
-  else
-    # Try running without --help (some versions might not support it)
-    if "${RADIO_CLI_SYMLINK}" -h >/dev/null 2>&1; then
-      msg "radio_cli fonctionne correctement ✓"
-    else
-      warn "radio_cli ne répond pas à --help ou -h"
-      warn "Cela peut être normal selon la version. Continuons..."
-    fi
-  fi
-
-  # Clean up
-  rm -f "/tmp/${FILES_NAME}"
-  rm -rf "$extracted_dir"
+install_node() {
+  echo "Installing Node.js (via Nodesource)…"
+  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+  apt-get install -y nodejs
 }
 
 deploy_web_interface() {
-  msg "Déploiement de l'interface web dans ${WEB_ROOT}…"
-  
-  # Find the source directory
-  local script_dir
-  script_dir="$(cd "$(dirname "$0")" && pwd)"
-  
-  local source_dir=""
-  if [[ -d "${script_dir}/dab-web-interface" ]]; then
-    source_dir="${script_dir}/dab-web-interface"
-  elif [[ -f "${script_dir}/app.js" ]]; then
-    source_dir="${script_dir}"
+  echo "Deploying web interface to $WEB_ROOT…"
+  mkdir -p "$WEB_ROOT"
+  # Copy the contents of the repository's dab-web-interface directory to
+  # the target location.  This assumes the script is executed from the
+  # root of the repository or that dab-web-interface exists relative to
+  # this script.
+  if [ -d dab-web-interface ]; then
+    cp -r dab-web-interface/* "$WEB_ROOT/"
   else
-    err "Dossier 'dab-web-interface' introuvable."
-    err "Lance le script depuis la racine du projet."
+    echo "Error: dab-web-interface directory not found.  Run this script from the repository root."
     exit 1
   fi
-
-  # Create target directory and copy files
-  mkdir -p "${WEB_ROOT}"
-  rm -rf "${WEB_ROOT:?}/"*
-  cp -r "${source_dir}/"* "${WEB_ROOT}/"
-
-  msg "Installation des dépendances npm…"
-  (cd "${WEB_ROOT}" && npm install --production --no-optional)
-  
-  # Verify installation
-  if [[ ! -f "${WEB_ROOT}/app.js" ]]; then
-    err "app.js non trouvé dans ${WEB_ROOT}"
-    exit 1
-  fi
-  
-  msg "Interface web installée ✓"
+  cd "$WEB_ROOT"
+  npm install --production
 }
 
 create_service() {
-  msg "Création du service systemd ${SERVICE_NAME}…"
-
+  echo "Creating systemd service for web interface…"
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=uGreen DAB Web Interface
 After=network.target
-Wants=network-online.target
 
 [Service]
-Type=simple
-Environment=NODE_ENV=production
 Environment=PORT=${WEB_PORT}
-Environment=HOST=0.0.0.0
-Environment=RADIO_CLI_PATH=${RADIO_CLI_SYMLINK}
-Environment=LOG_DIR=${LOG_DIR}
-Environment=DATA_DIR=${DATA_DIR}
-Environment=AUDIO_DEVICE=sysdefault:CARD=dabboard
 WorkingDirectory=${WEB_ROOT}
 ExecStart=/usr/bin/node ${WEB_ROOT}/app.js
 Restart=always
-RestartSec=5
-User=root
-Group=root
-
-# Security hardening (compatible with hardware access)
-NoNewPrivileges=false
-ProtectSystem=false
-PrivateTmp=true
-
-# Hardware access
-SupplementaryGroups=spi gpio i2c audio
-
-# Logging
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${SERVICE_NAME}
+User=$(logname)
+Group=$(logname)
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
   systemctl daemon-reload
-  systemctl enable "${SERVICE_NAME}"
-  
-  msg "Démarrage du service…"
-  if systemctl restart "${SERVICE_NAME}"; then
-    msg "Service démarré ✓"
-  else
-    warn "Le service n'a pas démarré correctement"
-    warn "Vérifiez avec: journalctl -u ${SERVICE_NAME} -f"
-  fi
+  systemctl enable ${SERVICE_NAME}
+  systemctl restart ${SERVICE_NAME}
 }
 
-print_summary() {
-  local ip
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || ip="<IP>"
-  
-  echo ""
-  echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  Installation terminée avec succès !${NC}"
-  echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo "  📻 Interface web:  http://${ip}:${WEB_PORT}/"
-  echo ""
-  echo "  🔧 Commandes utiles:"
-  echo "     - Status:    sudo systemctl status ${SERVICE_NAME}"
-  echo "     - Logs:      sudo journalctl -u ${SERVICE_NAME} -f"
-  echo "     - Restart:   sudo systemctl restart ${SERVICE_NAME}"
-  echo "     - Stop:      sudo systemctl stop ${SERVICE_NAME}"
-  echo ""
-  echo "  📁 Fichiers:"
-  echo "     - App:       ${WEB_ROOT}"
-  echo "     - Logs:      ${LOG_DIR}"
-  echo "     - Binaires:  ${INSTALL_DIR}"
-  echo ""
-  echo -e "${YELLOW}  ⚠️  Si l'I²S est activé, redémarrez le Raspberry Pi.${NC}"
-  echo ""
-}
+echo "This script will install the uGreen DAB software and a web interface." 
+echo "It must be run as root.  Continue? [y/N]"
+read -r answer
+case "$answer" in
+  [Yy]*) ;;
+  *) echo "Aborted."; exit 1;;
+esac
 
-# --------------------
-# Main
-# --------------------
-main() {
-  need_root
+install_deps
+download_ugreen
+install_node
+deploy_web_interface
+create_service
 
-  echo ""
-  echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${GREEN}║     uGreen DAB Board - Installation automatique             ║${NC}"
-  echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-  echo ""
-  echo "Ce script va installer:"
-  echo "  • Les binaires uGreen (radio_cli, DABBoardRadio)"
-  echo "  • Node.js 20.x"
-  echo "  • L'interface web sur le port ${WEB_PORT}"
-  echo "  • Un service systemd (${SERVICE_NAME})"
-  echo ""
-  echo "URL uGreen: ${FILES_URL}"
-  echo ""
-  
-  read -r -p "Continuer l'installation ? [y/N] " ans
-  case "${ans}" in
-    y|Y|yes|YES|o|O|oui|OUI) ;;
-    *) echo "Abandon."; exit 0 ;;
-  esac
-
-  install_deps
-  create_dirs
-  download_ugreen
-  deploy_web_interface
-  create_service
-  print_summary
-}
-
-main "$@"
+echo "\nInstallation complete.  The web interface should now be accessible at http://$(hostname -I | awk '{print $1}'):${WEB_PORT}/"
+echo "Reboot your system to ensure group permissions take effect."
