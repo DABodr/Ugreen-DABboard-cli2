@@ -1,878 +1,1712 @@
 <!DOCTYPE html>
 <html lang="fr">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>uGreen DAB Web Interface</title>
-    <style>
-      /* Root variables for easy theming */
-      :root {
-        --primary: #007acc;
-        --secondary: #e5e5e5;
-        --success: #4caf50;
-        --warning: #ff9800;
-        --error: #f44336;
-        --background: #f8f9fa;
-        --text: #333;
-        --border-radius: 6px;
-        --spacing: 8px;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background-color: var(--background);
-        color: var(--text);
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
-      }
-      header {
-        padding: var(--spacing) 16px;
-        background-color: var(--primary);
-        color: #fff;
-        font-size: 1.2rem;
-        text-align: center;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        gap: 12px;
-      }
-      .connection-status {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background-color: var(--error);
-        transition: background-color 0.3s;
-      }
-      .connection-status.connected {
-        background-color: var(--success);
-      }
-      .connection-status.reconnecting {
-        background-color: var(--warning);
-        animation: pulse 1s infinite;
-      }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
-      }
-      main {
-        flex: 1;
-        display: flex;
-        overflow: hidden;
-      }
-      aside {
-        width: 280px;
-        background-color: #fff;
-        border-right: 1px solid #ccc;
-        overflow-y: auto;
-        padding: var(--spacing);
-      }
-      section {
-        flex: 1;
-        padding: var(--spacing) 16px;
-        overflow-y: auto;
-      }
-      button {
-        padding: 8px 14px;
-        border: none;
-        border-radius: var(--border-radius);
-        background-color: var(--primary);
-        color: #fff;
-        cursor: pointer;
-        margin: var(--spacing) 0;
-        font-size: 14px;
-        transition: background-color 0.2s;
-      }
-      button:hover:not(:disabled) {
-        background-color: #005a9e;
-      }
-      button:disabled {
-        background-color: #aaa;
-        cursor: default;
-      }
-      .block-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      .block-list li {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 6px 4px;
-        border-bottom: 1px solid #f0f0f0;
-        cursor: pointer;
-        transition: background-color 0.15s;
-      }
-      .block-list li:hover {
-        background-color: #f5f8fc;
-      }
-      .block-list li.selected {
-        background-color: #eef7ff;
-      }
-      .indicator {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        margin-right: 6px;
-        display: inline-block;
-        flex-shrink: 0;
-      }
-      .indicator.gray {
-        background-color: #bbb;
-      }
-      .indicator.green {
-        background-color: var(--success);
-      }
-      .indicator.scanning {
-        background-color: var(--warning);
-        animation: pulse 0.5s infinite;
-      }
-      .block-label {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .block-snr {
-        font-size: 0.85em;
-        color: #666;
-        margin-left: 8px;
-        flex-shrink: 0;
-      }
-      .service-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      .service-list li {
-        padding: 8px 10px;
-        border-radius: var(--border-radius);
-        cursor: pointer;
-        margin-bottom: 4px;
-        transition: background-color 0.15s;
-      }
-      .service-list li:hover {
-        background-color: #eef2f7;
-      }
-      .service-list li.selected {
-        background-color: #e3f0ff;
-      }
-      .metadata {
-        margin-top: 16px;
-        background-color: #fff;
-        padding: 14px;
-        border-radius: var(--border-radius);
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      }
-      .metadata h3 {
-        margin-top: 0;
-        margin-bottom: 12px;
-      }
-      .metadata p {
-        margin: 8px 0;
-      }
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DABboard</title>
+  <style>
+    /* ================================================
+       Variables — Vanilla dark (inspiré welle.io)
+       ================================================ */
+    :root {
+      --bg:         #0e0e12;
+      --bg-card:    #16161c;
+      --bg-hover:   #1e1e26;
+      --bg-sel:     #1a2030;
+      --border:     #2a2a38;
+      --text:       #dde0ee;
+      --text-dim:   #5a5a72;
+      --text-mid:   #9090a8;
+      --accent:     #00d4aa;
+      --accent-dim: #00a882;
+      --coral:      #ff6b8a;
+      --warn:       #f0a040;
+      --error:      #ff4d6a;
+      --fm-accent:  #7b9fff;
+      --radius:     4px;
+      --font:       'Segoe UI', system-ui, sans-serif;
+      --mono:       'Consolas', 'Courier New', monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-      /* Loading indicator styles */
-      .loading {
-        display: none;
-        margin-top: var(--spacing);
-        padding: 10px;
-        background-color: #e8f4fd;
-        border-radius: var(--border-radius);
-        color: var(--primary);
-        font-style: italic;
-      }
-      .loading.active {
-        display: block;
-      }
-      .loading::before {
-        content: "⏳ ";
-      }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      font-size: 13px;
+      overflow: hidden;
+    }
 
-      /* Error message styles */
-      .error-message {
-        display: none;
-        margin-top: var(--spacing);
-        padding: 10px;
-        background-color: #ffebee;
-        border-radius: var(--border-radius);
-        color: var(--error);
-      }
-      .error-message.active {
-        display: block;
-      }
+    /* ================================================
+       Topbar
+       ================================================ */
+    .topbar {
+      display: flex;
+      align-items: center;
+      padding: 0 18px;
+      height: 48px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      gap: 14px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .brand {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--error);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    .conn-dot.connected    { background: var(--accent); }
+    .conn-dot.reconnecting { background: var(--warn); animation: pulse 1s infinite; }
 
-      /* Modal for log window */
-      .modal {
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0, 0, 0, 0.5);
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        visibility: hidden;
-        opacity: 0;
-        transition: visibility 0s, opacity 0.2s;
-        z-index: 1000;
-      }
-      .modal.active {
-        visibility: visible;
-        opacity: 1;
-      }
-      .modal-content {
-        width: 90%;
-        max-width: 900px;
-        background: #fff;
-        padding: 16px;
-        border-radius: var(--border-radius);
-        max-height: 85vh;
-        overflow-y: auto;
-      }
-      .modal-content h3 {
-        margin-top: 0;
-      }
-      .modal-content pre {
-        white-space: pre-wrap;
-        word-break: break-all;
-        background-color: #f5f5f5;
-        padding: 10px;
-        border-radius: var(--border-radius);
-        max-height: 60vh;
-        overflow-y: auto;
-        font-size: 12px;
-      }
+    /* Mode tabs */
+    .mode-tabs {
+      display: flex;
+      background: var(--bg);
+      border-radius: var(--radius);
+      padding: 2px;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+    .tab {
+      padding: 4px 14px;
+      border-radius: calc(var(--radius) - 1px);
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      font-family: var(--font);
+    }
+    .tab:hover:not(.active) { color: var(--text); }
+    .tab.active { background: var(--bg-card); color: var(--accent); }
+    .tab.active.fm-tab { color: var(--fm-accent); }
 
-      /* VU meter styles */
-      .vu-container {
-        margin-top: 16px;
-        display: none;
-      }
-      .vu-container.active {
-        display: block;
-      }
-      .vu-label {
-        font-size: 0.9em;
-        margin-bottom: 4px;
-        color: #666;
-      }
-      #vuMeter {
-        height: 20px;
-        background: linear-gradient(to right, #ddd, #eee);
-        border-radius: var(--border-radius);
-        overflow: hidden;
-        position: relative;
-      }
-      #vuBar {
-        height: 100%;
-        width: 0%;
-        background: linear-gradient(to right, var(--success), #8bc34a, var(--warning), var(--error));
-        transition: width 0.1s linear;
-      }
-      #vuValue {
-        position: absolute;
-        right: 8px;
-        top: 50%;
-        transform: translateY(-50%);
-        font-size: 11px;
-        font-weight: bold;
-        color: #333;
-      }
+    .topbar-spacer { flex: 1; }
 
-      /* Controls row */
-      .controls-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        align-items: center;
-        margin-top: 16px;
-      }
-      .controls-row label {
-        font-size: 14px;
-      }
-      .controls-row select {
-        padding: 6px 10px;
-        border-radius: var(--border-radius);
-        border: 1px solid #ccc;
-      }
+    /* Volume */
+    .vol-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .vol-icon { font-size: 12px; color: var(--text-mid); user-select: none; }
+    .vol-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 80px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+    }
+    .vol-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .vol-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
+    .vol-num {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-mid);
+      min-width: 20px;
+    }
 
-      /* Dark theme variables */
-      .dark-theme {
-        --background: #121212;
-        --text: #e0e0e0;
-        --primary: #bb86fc;
-        --secondary: #1f1f1f;
-        --success: #03dac5;
-        --warning: #ffb74d;
-        --error: #cf6679;
-      }
-      .dark-theme aside,
-      .dark-theme .metadata,
-      .dark-theme .modal-content {
-        background-color: #1e1e1e;
-      }
-      .dark-theme .block-list li:hover,
-      .dark-theme .service-list li:hover {
-        background-color: #2a2a2a;
-      }
-      .dark-theme .block-list li.selected,
-      .dark-theme .service-list li.selected {
-        background-color: #3a3a3a;
-      }
-      .dark-theme .modal-content pre {
-        background-color: #2a2a2a;
-      }
-      .dark-theme .loading {
-        background-color: #2a2a2a;
-      }
-      .dark-theme button:hover:not(:disabled) {
-        background-color: #9a67ea;
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <span class="connection-status" id="connectionStatus" title="Déconnecté"></span>
-      <span>uGreen DAB Web Interface</span>
-    </header>
-    <main>
-      <aside>
-        <button id="scanBtn">🔍 Lancer le scan</button>
-        <ul id="blockList" class="block-list"></ul>
-      </aside>
-      <section>
-        <h2 id="muxName">Sélectionnez un bloc pour voir les services</h2>
-        <ul id="services" class="service-list"></ul>
-        
-        <div id="metadata" class="metadata" style="display:none;">
-          <h3>📻 Métadonnées</h3>
-          <p><strong>DLS:</strong> <span id="dls"></span></p>
-          <p><strong>DL+:</strong> <span id="dlPlus"></span></p>
-          <div id="slsContainer">
-            <p><strong>SLS:</strong></p>
-            <img id="slsImage" src="" alt="Slideshow" style="max-width:100%; display:none;" />
-          </div>
+    /* Topbar buttons */
+    .btn {
+      padding: 5px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--text-mid);
+      font-size: 12px;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: rgba(0,212,170,0.05); }
+    .btn:disabled { opacity: 0.35; cursor: default; }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #000;
+      font-weight: 700;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent-dim); color: #000; }
+    .btn-primary:disabled { background: var(--border); border-color: var(--border); color: var(--text-dim); }
+
+    .btn-fm-primary {
+      background: var(--fm-accent);
+      border-color: var(--fm-accent);
+      color: #000;
+      font-weight: 700;
+    }
+    .btn-fm-primary:hover:not(:disabled) { background: #6080e0; border-color: #6080e0; color: #000; }
+
+    /* I²S toggle */
+    .i2s-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+    }
+    .i2s-track {
+      width: 28px; height: 14px;
+      border-radius: 7px;
+      background: var(--border);
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    .i2s-track::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      transition: transform 0.2s, background 0.2s;
+    }
+    .i2s-btn.active .i2s-track { background: rgba(0,212,170,0.3); }
+    .i2s-btn.active .i2s-track::after { transform: translateX(14px); background: var(--accent); }
+    .i2s-label { font-size: 11px; color: var(--text-mid); }
+
+    /* ================================================
+       Channel bar
+       ================================================ */
+    .channelbar {
+      display: flex;
+      align-items: center;
+      padding: 0 18px;
+      height: 50px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .channelbar-label { font-size: 12px; color: var(--text-mid); white-space: nowrap; }
+
+    .channel-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: var(--radius);
+      padding: 5px 28px 5px 9px;
+      font-size: 12px;
+      font-family: var(--mono);
+      cursor: pointer;
+      outline: none;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%235a5a72' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      transition: border-color 0.15s;
+    }
+    .channel-select:focus { border-color: var(--accent); }
+    .channel-select option { background: #1a1a22; }
+
+    /* FM freq controls */
+    .fm-freq-group {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .fm-step-btn {
+      padding: 6px 10px;
+      background: var(--bg);
+      border: none;
+      color: var(--text-mid);
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.12s, color 0.12s;
+      font-family: var(--font);
+    }
+    .fm-step-btn:hover { background: var(--bg-hover); color: var(--fm-accent); }
+    .fm-freq-input {
+      background: var(--bg);
+      border: none;
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 700;
+      width: 68px;
+      text-align: center;
+      padding: 5px 4px;
+      outline: none;
+    }
+    .fm-freq-input:focus { background: var(--bg-hover); }
+    .fm-freq-mhz { font-size: 11px; color: var(--text-dim); }
+
+    /* RSSI mini bar in channelbar (FM) */
+    .fm-rssi-mini {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+    }
+    .fm-rssi-segs {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+    }
+    .fm-rssi-seg {
+      width: 4px;
+      background: #222230;
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+    .fm-rssi-seg:nth-child(1)  { height: 6px; }
+    .fm-rssi-seg:nth-child(2)  { height: 8px; }
+    .fm-rssi-seg:nth-child(3)  { height: 10px; }
+    .fm-rssi-seg:nth-child(4)  { height: 12px; }
+    .fm-rssi-seg:nth-child(5)  { height: 14px; }
+    .fm-rssi-seg:nth-child(6)  { height: 16px; }
+    .fm-rssi-seg.lit-red    { background: var(--error); }
+    .fm-rssi-seg.lit-orange { background: var(--warn); }
+    .fm-rssi-seg.lit-green  { background: var(--accent); }
+    .fm-rssi-seg.lit-blue   { background: var(--fm-accent); }
+    .fm-rssi-val { font-family: var(--mono); font-size: 11px; color: var(--text-mid); }
+
+    .channelbar-sep {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
+    /* ================================================
+       Layout
+       ================================================ */
+    .layout {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ================================================
+       Sidebar
+       ================================================ */
+    .sidebar {
+      width: 230px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      background: var(--bg-card);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-lbl {
+      padding: 9px 12px 7px;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .block-list, .fm-preset-list {
+      list-style: none;
+      overflow-y: auto;
+      flex: 1;
+      padding: 4px 0;
+    }
+    .block-list li, .fm-preset-list li {
+      display: flex;
+      align-items: center;
+      padding: 5px 12px;
+      cursor: pointer;
+      gap: 7px;
+      transition: background 0.12s;
+      border-left: 2px solid transparent;
+    }
+    .block-list li:hover, .fm-preset-list li:hover { background: var(--bg-hover); }
+    .block-list li.selected, .fm-preset-list li.selected {
+      background: var(--bg-sel);
+      border-left-color: var(--accent);
+    }
+    .indicator {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--border);
+    }
+    .indicator.green    { background: var(--accent); }
+    .indicator.scanning { background: var(--warn); animation: pulse 0.5s infinite; }
+    .indicator.blue     { background: var(--fm-accent); }
+    .block-name {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      min-width: 28px;
+      flex-shrink: 0;
+    }
+    .block-mux {
+      font-size: 11px;
+      color: var(--text-mid);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .block-snr {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent);
+      flex-shrink: 0;
+      min-width: 46px;
+      text-align: right;
+    }
+
+    /* ================================================
+       Main content
+       ================================================ */
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 22px;
+      gap: 14px;
+    }
+
+    /* Banners */
+    .banner {
+      display: none;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      border: 1px solid;
+      align-items: center;
+      gap: 8px;
+    }
+    .banner.active { display: flex; }
+    .banner-loading { background: rgba(0,212,170,0.06); border-color: rgba(0,212,170,0.2); color: var(--accent); }
+    .banner-loading::before {
+      content: '';
+      width: 11px; height: 11px;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    .banner-error { background: rgba(255,77,106,0.06); border-color: rgba(255,77,106,0.2); color: var(--error); }
+
+    /* Ensemble / station title */
+    .station-header {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .station-title {
+      font-size: 19px;
+      font-weight: 700;
+      color: var(--coral);
+      letter-spacing: 0.02em;
+    }
+    .station-title.fm { color: var(--fm-accent); }
+    .station-meta {
+      font-size: 12px;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ================================================
+       Pills / badges
+       ================================================ */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .pill-ok    { background: rgba(0,212,170,0.12);  color: var(--accent); border: 1px solid rgba(0,212,170,0.25); }
+    .pill-warn  { background: rgba(240,160,64,0.12);  color: var(--warn);   border: 1px solid rgba(240,160,64,0.25); }
+    .pill-error { background: rgba(255,77,106,0.12);  color: var(--error);  border: 1px solid rgba(255,77,106,0.25); }
+    .pill-blue  { background: rgba(123,159,255,0.12); color: var(--fm-accent); border: 1px solid rgba(123,159,255,0.25); }
+    .live-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse-dot 1.8s ease-in-out infinite;
+    }
+
+    /* ================================================
+       SNR bar (style welle.io)
+       ================================================ */
+    .signal-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .signal-inner {
+      padding: 14px 16px 12px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+    .snr-label-sm {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .snr-value {
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+    }
+    .snr-value .unit { font-size: 12px; font-weight: 400; color: var(--text-mid); }
+    .snr-bar-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      position: relative;
+    }
+    .snr-nosignal { display: none; }
+    .snr-nosignal.visible { display: block; }
+    .snr-segments {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+    }
+    .snr-seg {
+      height: 20px;
+      width: 13px;
+      border-radius: 1px;
+      background: #222230;
+      flex-shrink: 0;
+      transition: background 0.12s;
+    }
+    .snr-seg.lit-red    { background: var(--error); }
+    .snr-seg.lit-orange { background: var(--warn); }
+    .snr-seg.lit-green  { background: var(--accent); }
+    .snr-seg.lit-blue   { background: var(--fm-accent); }
+    .snr-scale {
+      display: flex;
+      justify-content: space-between;
+    }
+    .snr-scale span {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+
+    /* RSSI secondary label */
+    .rssi-badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-mid);
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    /* ================================================
+       Card
+       ================================================ */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-title {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--text-dim);
+    }
+
+    /* ================================================
+       Service table
+       ================================================ */
+    .svc-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .svc-table thead th {
+      padding: 7px 12px;
+      text-align: left;
+      font-size: 10px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .svc-table tbody tr {
+      cursor: pointer;
+      transition: background 0.1s;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .svc-table tbody tr:last-child { border-bottom: none; }
+    .svc-table tbody tr:hover    { background: var(--bg-hover); }
+    .svc-table tbody tr.selected { background: var(--bg-sel); }
+    .svc-table tbody tr.selected td:first-child { border-left: 2px solid var(--accent); }
+    .svc-table td { padding: 9px 12px; font-size: 12px; color: var(--text); vertical-align: middle; }
+    .svc-table td.sid  { font-family: var(--mono); color: var(--text-dim); font-size: 11px; }
+    .svc-table td.lbl  { font-weight: 600; }
+    .empty-state { padding: 30px; text-align: center; color: var(--text-dim); font-size: 12px; }
+
+    /* ================================================
+       Metadata / DLS
+       ================================================ */
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .meta-cell {
+      padding: 10px 12px;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .meta-cell:nth-child(2n)      { border-right: none; }
+    .meta-cell:nth-last-child(-n+2) { border-bottom: none; }
+    .meta-cell-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .meta-cell-value { font-size: 13px; color: var(--text); word-break: break-word; }
+    .meta-cell-value.dim { color: var(--text-mid); font-style: italic; }
+
+    .dls-text {
+      padding: 14px 16px;
+      font-size: 14px;
+      color: var(--text);
+      font-style: italic;
+      line-height: 1.5;
+    }
+    .dls-text.empty { color: var(--text-mid); font-style: normal; }
+
+    /* SLS image */
+    .sls-area { padding: 12px; border-top: 1px solid var(--border); display: none; }
+    .sls-area img { max-width: 220px; border-radius: var(--radius); display: block; }
+
+    /* ================================================
+       FM — RDS infos
+       ================================================ */
+    .rds-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    .rds-cell {
+      padding: 10px 12px;
+      border-right: 1px solid var(--border);
+    }
+    .rds-cell:last-child { border-right: none; }
+
+    .fm-ps-title {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--fm-accent);
+      letter-spacing: 0.08em;
+      font-family: var(--mono);
+    }
+
+    /* FM radiotext */
+    .rt-text {
+      padding: 14px 16px;
+      font-size: 14px;
+      color: var(--text);
+      font-style: italic;
+      line-height: 1.5;
+      min-height: 48px;
+    }
+
+    /* ================================================
+       VU meter
+       ================================================ */
+    .vu-inner { padding: 12px 16px; }
+    .vu-track {
+      height: 8px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .vu-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(to right, var(--accent) 0%, var(--warn) 75%, var(--error) 95%);
+      transition: width 0.08s linear;
+      border-radius: 2px;
+    }
+    .vu-row {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+    }
+    .vu-row span { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+    .vu-pct { color: var(--accent) !important; font-weight: 700; }
+
+    /* ================================================
+       Modal logs
+       ================================================ */
+    .modal {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.65);
+      display: flex; justify-content: center; align-items: center;
+      visibility: hidden; opacity: 0;
+      transition: opacity 0.18s, visibility 0s 0.18s;
+      z-index: 100;
+    }
+    .modal.active { visibility: visible; opacity: 1; transition: opacity 0.18s; }
+    .modal-box {
+      width: 90%; max-width: 860px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      max-height: 85vh;
+      display: flex; flex-direction: column;
+    }
+    .modal-head {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .modal-head-title {
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim);
+    }
+    .modal-body { overflow-y: auto; flex: 1; padding: 12px 16px; }
+    .modal-body pre {
+      font-family: var(--mono); font-size: 11px; color: var(--text-mid);
+      white-space: pre-wrap; word-break: break-all; line-height: 1.55;
+    }
+    .modal-foot {
+      padding: 10px 16px; border-top: 1px solid var(--border);
+      flex-shrink: 0; display: flex; justify-content: flex-end;
+    }
+
+    /* ================================================
+       Scrollbar
+       ================================================ */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ================================================
+       Animations
+       ================================================ */
+    @keyframes pulse     { 0%,100%{opacity:1}50%{opacity:.3} }
+    @keyframes spin      { to{transform:rotate(360deg)} }
+    @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)} }
+  </style>
+</head>
+<body>
+
+<!-- ===================== TOPBAR ===================== -->
+<header class="topbar">
+  <div class="brand">
+    <span class="conn-dot" id="connDot" title="Déconnecté"></span>
+    DAB<strong style="color:var(--accent)">board</strong>
+  </div>
+
+  <div class="mode-tabs">
+    <button class="tab active"    id="tabDab" onclick="setMode('dab')">DAB+</button>
+    <button class="tab fm-tab"    id="tabFm"  onclick="setMode('fm')">FM</button>
+  </div>
+
+  <div class="topbar-spacer"></div>
+
+  <!-- Volume -->
+  <div class="vol-wrap">
+    <span class="vol-icon">🔊</span>
+    <input type="range" class="vol-slider" id="volSlider" min="0" max="63" value="40">
+    <span class="vol-num" id="volNum">40</span>
+  </div>
+
+  <!-- I²S toggle -->
+  <button class="btn i2s-btn" id="i2sBtn" title="Sortie audio I²S (reboot requis)">
+    <span class="i2s-track"></span>
+    <span class="i2s-label">I²S</span>
+  </button>
+
+  <!-- Actions -->
+  <button class="btn" id="audioToggle">Audio</button>
+  <button class="btn" id="logBtn">Logs</button>
+</header>
+
+<!-- ===================== CHANNEL BAR DAB ===================== -->
+<div class="channelbar" id="channelbarDab">
+  <span class="channelbar-label">Bloc</span>
+  <select class="channel-select" id="blockSelect">
+    <option value="all">Tous les blocs</option>
+    <option>5A</option><option>5B</option><option>5C</option><option>5D</option>
+    <option>6A</option><option>6B</option><option>6C</option><option>6D</option>
+    <option>7A</option><option>7B</option><option>7C</option><option>7D</option>
+    <option>8A</option><option>8B</option><option>8C</option><option>8D</option>
+    <option>9A</option><option>9B</option><option>9C</option><option>9D</option>
+    <option>10A</option><option>10N</option><option>10B</option><option>10C</option><option>10D</option>
+    <option>11A</option><option>11N</option><option>11B</option><option>11C</option><option>11D</option>
+    <option>12A</option><option>12N</option><option>12B</option><option>12C</option><option>12D</option>
+    <option>13A</option><option>13B</option><option>13C</option><option>13D</option><option>13E</option><option>13F</option>
+  </select>
+  <button class="btn btn-primary" id="scanBtn">⦿ Scan</button>
+  <div class="channelbar-sep"></div>
+  <button class="btn" id="diagBtn" title="Statut technique (digrad)">Diag</button>
+</div>
+
+<!-- ===================== CHANNEL BAR FM ===================== -->
+<div class="channelbar" id="channelbarFm" style="display:none">
+  <span class="channelbar-label">Fréquence</span>
+  <div class="fm-freq-group">
+    <button class="fm-step-btn" id="fmPrevBtn">◀</button>
+    <input type="number" class="fm-freq-input" id="fmFreqInput"
+           min="87.5" max="108.0" step="0.1" value="103.5">
+    <button class="fm-step-btn" id="fmNextBtn">▶</button>
+  </div>
+  <span class="fm-freq-mhz">MHz</span>
+  <button class="btn btn-fm-primary" id="fmTuneBtn">📡 Écouter</button>
+  <div class="channelbar-sep"></div>
+  <!-- RSSI mini bars -->
+  <div class="fm-rssi-mini" id="fmRssiMini" style="display:none">
+    <div class="fm-rssi-segs" id="fmRssiSegs">
+      <div class="fm-rssi-seg"></div><div class="fm-rssi-seg"></div>
+      <div class="fm-rssi-seg"></div><div class="fm-rssi-seg"></div>
+      <div class="fm-rssi-seg"></div><div class="fm-rssi-seg"></div>
+    </div>
+    <span class="fm-rssi-val" id="fmRssiVal">— dBm</span>
+  </div>
+</div>
+
+<!-- ===================== LAYOUT ===================== -->
+<div class="layout">
+
+  <!-- SIDEBAR DAB -->
+  <nav class="sidebar" id="sidebarDab">
+    <div class="sidebar-lbl">Blocs Band III</div>
+    <ul class="block-list" id="blockList"></ul>
+  </nav>
+
+  <!-- SIDEBAR FM -->
+  <nav class="sidebar" id="sidebarFm" style="display:none">
+    <div class="sidebar-lbl">Fréquences récentes</div>
+    <ul class="fm-preset-list" id="fmPresetList">
+      <li style="padding:20px 12px; color:var(--text-dim); font-size:11px;">Aucune fréquence récente</li>
+    </ul>
+  </nav>
+
+  <!-- MAIN DAB -->
+  <main class="content" id="mainDab">
+    <div class="banner banner-loading" id="loadingBanner"></div>
+    <div class="banner banner-error"   id="errorBanner"></div>
+
+    <div class="station-header">
+      <span class="station-title" id="muxName">Sélectionnez un bloc</span>
+      <span class="station-meta">
+        <span id="ensembleDatetime" style="display:none"></span>
+      </span>
+    </div>
+
+    <!-- SNR bar -->
+    <div class="signal-card" id="snrCard" style="display:none">
+      <div class="signal-inner">
+        <div style="flex-shrink:0">
+          <div class="snr-label-sm">SNR</div>
+          <div class="snr-value"><span id="snrDisplay">—</span><span class="unit"> dB</span></div>
         </div>
-
-        <div class="vu-container" id="vuContainer">
-          <div class="vu-label">Niveau audio (I²S)</div>
-          <div id="vuMeter">
-            <div id="vuBar"></div>
-            <span id="vuValue">0%</span>
-          </div>
+        <div class="snr-bar-wrap">
+          <span class="snr-nosignal pill pill-warn" id="noSignalBadge">No signal</span>
+          <div class="snr-segments" id="snrSegs"></div>
+          <div class="snr-scale"><span>0 dB</span><span>5</span><span>10</span><span>15</span><span>20 dB</span></div>
         </div>
-
-        <div class="controls-row">
-          <button id="audioToggle">🎵 Afficher le vumètre</button>
-          <label for="themeSelector">Thème :</label>
-          <select id="themeSelector">
-            <option value="default">☀️ Clair</option>
-            <option value="dark">🌙 Sombre</option>
-          </select>
-          <button id="logBtn">📋 Voir les logs</button>
-        </div>
-
-        <!-- Loading indicator -->
-        <p id="loadingIndicator" class="loading">Chargement…</p>
-        
-        <!-- Error message -->
-        <p id="errorMessage" class="error-message"></p>
-      </section>
-    </main>
-
-    <!-- Log modal -->
-    <div id="logModal" class="modal">
-      <div class="modal-content">
-        <h3>📋 Journal des commandes</h3>
-        <pre id="logContent">Chargement...</pre>
-        <button id="closeLogBtn">Fermer</button>
+        <span class="rssi-badge" id="rssiDisplay" style="display:none"></span>
       </div>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-      // =====================
-      // Configuration
-      // =====================
-      const RECONNECT_DELAY_MS = 2000;
-      const MAX_RECONNECT_ATTEMPTS = 10;
+    <!-- Services -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Services</span>
+        <span id="svcCount" class="pill pill-warn" style="display:none"></span>
+      </div>
+      <div id="svcWrap"><div class="empty-state">Aucun multiplex sélectionné</div></div>
+    </div>
 
-      // =====================
-      // DOM Elements
-      // =====================
-      const connectionStatus = document.getElementById('connectionStatus');
-      const scanBtn = document.getElementById('scanBtn');
-      const blockListEl = document.getElementById('blockList');
-      const muxNameEl = document.getElementById('muxName');
-      const servicesEl = document.getElementById('services');
-      const metadataEl = document.getElementById('metadata');
-      const dlsEl = document.getElementById('dls');
-      const dlPlusEl = document.getElementById('dlPlus');
-      const slsImageEl = document.getElementById('slsImage');
-      const logBtn = document.getElementById('logBtn');
-      const logModal = document.getElementById('logModal');
-      const logContent = document.getElementById('logContent');
-      const closeLogBtn = document.getElementById('closeLogBtn');
-      const audioToggle = document.getElementById('audioToggle');
-      const vuContainer = document.getElementById('vuContainer');
-      const vuBar = document.getElementById('vuBar');
-      const vuValue = document.getElementById('vuValue');
-      const themeSelector = document.getElementById('themeSelector');
-      const loadingIndicator = document.getElementById('loadingIndicator');
-      const errorMessage = document.getElementById('errorMessage');
+    <!-- DLS / Métadonnées -->
+    <div class="card" id="dlsCard" style="display:none">
+      <div class="card-header">
+        <span class="card-title">En cours</span>
+        <span class="pill pill-ok" id="dlsLiveBadge" style="display:none">
+          <span class="live-dot"></span>live
+        </span>
+      </div>
+      <div class="dls-text" id="dlsText">—</div>
+      <div class="sls-area" id="slsArea">
+        <img id="slsImage" src="" alt="Slideshow" />
+      </div>
+    </div>
 
-      // =====================
-      // State
-      // =====================
-      let audioActive = false;
-      let pendingBlock = null;
-      let pendingService = null;
-      let isScanning = false;
-      let currentBlock = null;
+    <!-- VU meter -->
+    <div class="card" id="vuCard" style="display:none">
+      <div class="card-header">
+        <span class="card-title">Niveau audio I²S</span>
+        <span class="pill pill-ok" id="vuBadge">0%</span>
+      </div>
+      <div class="vu-inner">
+        <div class="vu-track"><div class="vu-fill" id="vuFill"></div></div>
+        <div class="vu-row">
+          <span>0%</span><span>25%</span><span>50%</span><span>75%</span>
+          <span class="vu-pct" id="vuPct">0%</span>
+        </div>
+      </div>
+    </div>
+  </main>
 
-      // =====================
-      // Socket.IO with auto-reconnect
-      // =====================
-      const socket = io({
-        reconnection: true,
-        reconnectionDelay: RECONNECT_DELAY_MS,
-        reconnectionAttempts: MAX_RECONNECT_ATTEMPTS
-      });
+  <!-- MAIN FM -->
+  <main class="content" id="mainFm" style="display:none">
+    <div class="banner banner-loading" id="fmLoadingBanner"></div>
+    <div class="banner banner-error"   id="fmErrorBanner"></div>
 
-      socket.on('connect', () => {
-        console.log('Connected to server');
-        connectionStatus.className = 'connection-status connected';
-        connectionStatus.title = 'Connecté';
-        hideError();
-      });
+    <div class="station-header">
+      <span class="fm-ps-title" id="fmPsName">—</span>
+      <span class="station-meta" id="fmMeta" style="display:none">
+        <span class="pill pill-blue" id="stereoIndicator" style="display:none">Stéréo</span>
+        <span class="pill pill-ok"   id="rdsIndicator"    style="display:none">RDS</span>
+      </span>
+    </div>
 
-      socket.on('disconnect', () => {
-        console.log('Disconnected from server');
-        connectionStatus.className = 'connection-status';
-        connectionStatus.title = 'Déconnecté';
-      });
+    <!-- RSSI bar FM -->
+    <div class="signal-card" id="fmSignalCard" style="display:none">
+      <div class="signal-inner">
+        <div style="flex-shrink:0">
+          <div class="snr-label-sm">RSSI</div>
+          <div class="snr-value"><span id="fmRssiDisplay">—</span><span class="unit"> dBm</span></div>
+        </div>
+        <div class="snr-bar-wrap">
+          <div class="snr-segments" id="fmRssiBarSegs"></div>
+          <div class="snr-scale"><span>−110</span><span>−90</span><span>−70</span><span>−50</span><span>−30 dBm</span></div>
+        </div>
+      </div>
+    </div>
 
-      socket.on('reconnecting', (attemptNumber) => {
-        console.log(`Reconnecting... attempt ${attemptNumber}`);
-        connectionStatus.className = 'connection-status reconnecting';
-        connectionStatus.title = `Reconnexion... (tentative ${attemptNumber})`;
-      });
+    <!-- RDS info grid -->
+    <div class="card" id="rdsCard" style="display:none">
+      <div class="card-header">
+        <span class="card-title">RDS</span>
+        <span class="pill pill-blue" id="rdsLiveBadge" style="display:none">
+          <span class="live-dot"></span>live
+        </span>
+      </div>
+      <div class="rds-grid">
+        <div class="rds-cell meta-cell">
+          <div class="meta-cell-label">PI</div>
+          <div class="meta-cell-value" id="rdsPi">—</div>
+        </div>
+        <div class="rds-cell meta-cell">
+          <div class="meta-cell-label">PTY</div>
+          <div class="meta-cell-value" id="rdsPty">—</div>
+        </div>
+        <div class="rds-cell meta-cell">
+          <div class="meta-cell-label">TP</div>
+          <div class="meta-cell-value" id="rdsTp">—</div>
+        </div>
+        <div class="rds-cell meta-cell" style="border-right:none">
+          <div class="meta-cell-label">TA</div>
+          <div class="meta-cell-value" id="rdsTa">—</div>
+        </div>
+      </div>
+    </div>
 
-      socket.on('reconnect_failed', () => {
-        console.error('Reconnection failed');
-        showError('Connexion au serveur perdue. Rechargez la page.');
-      });
+    <!-- Radiotext -->
+    <div class="card" id="rtCard" style="display:none">
+      <div class="card-header">
+        <span class="card-title">Radiotext</span>
+        <span class="pill pill-blue" id="rtLiveBadge" style="display:none">
+          <span class="live-dot"></span>live
+        </span>
+      </div>
+      <div class="rt-text" id="rtText">—</div>
+    </div>
 
-      // =====================
-      // Utility Functions
-      // =====================
-      function showLoading(message) {
-        loadingIndicator.textContent = message;
-        loadingIndicator.classList.add('active');
+    <!-- VU meter FM -->
+    <div class="card" id="vuCardFm" style="display:none">
+      <div class="card-header">
+        <span class="card-title">Niveau audio I²S</span>
+        <span class="pill pill-blue" id="vuBadgeFm">0%</span>
+      </div>
+      <div class="vu-inner">
+        <div class="vu-track"><div class="vu-fill" id="vuFillFm" style="background:linear-gradient(to right,var(--fm-accent) 0%,var(--warn) 75%,var(--error) 95%)"></div></div>
+        <div class="vu-row">
+          <span>0%</span><span>25%</span><span>50%</span><span>75%</span>
+          <span class="vu-pct" style="color:var(--fm-accent)!important" id="vuPctFm">0%</span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+</div><!-- /.layout -->
+
+<!-- ===================== LOG MODAL ===================== -->
+<div class="modal" id="logModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span class="modal-head-title">Journal des commandes</span>
+    </div>
+    <div class="modal-body"><pre id="logContent">Chargement…</pre></div>
+    <div class="modal-foot"><button class="btn" id="closeLogBtn">Fermer</button></div>
+  </div>
+</div>
+
+<!-- ===================== SCRIPTS ===================== -->
+<script src="/socket.io/socket.io.js"></script>
+<script>
+// ============================================================
+// Configuration
+// ============================================================
+const SNR_SEGS         = 30;
+const SNR_MAX_DB       = 20;
+const SNR_NOSIG_THR    = 4;
+const RSSI_FM_SEGS     = 30;
+const RSSI_FM_MIN      = -110;
+const RSSI_FM_MAX      = -30;
+const FM_STEP          = 0.1;
+
+// PTY table (RBDS/RDS Europe)
+const PTY_NAMES = ["None","News","Affairs","Info","Sport","Educate","Drama","Culture","Science","Varied",
+  "Pop M","Rock M","Easy M","Light M","Classics","Other M","Weather","Finance","Children","Social",
+  "Religion","Phone In","Travel","Leisure","Jazz","Country","Nation M","Oldies","Folk M","Document","Test","Alarm"];
+
+// ============================================================
+// App state
+// ============================================================
+const appState = {
+  mode:          'dab',
+  volume:        40,
+  i2sEnabled:    false,
+  // DAB
+  currentBlock:  null,
+  currentSnr:    null,
+  isDabScanning: false,
+  hasService:    false,
+  dlsActive:     false,
+  // FM
+  fmFreqMhz:     103.5,
+  isFmTuned:     false,
+  rdsActive:     false,
+  audioActive:   false,
+};
+
+// ============================================================
+// DOM refs
+// ============================================================
+const connDot       = document.getElementById('connDot');
+const volSlider     = document.getElementById('volSlider');
+const volNum        = document.getElementById('volNum');
+const i2sBtn        = document.getElementById('i2sBtn');
+const audioToggle   = document.getElementById('audioToggle');
+const logBtn        = document.getElementById('logBtn');
+const logModal      = document.getElementById('logModal');
+const logContent    = document.getElementById('logContent');
+const closeLogBtn   = document.getElementById('closeLogBtn');
+// DAB
+const scanBtn       = document.getElementById('scanBtn');
+const blockSelect   = document.getElementById('blockSelect');
+const diagBtn       = document.getElementById('diagBtn');
+const blockListEl   = document.getElementById('blockList');
+const muxNameEl     = document.getElementById('muxName');
+const snrCard       = document.getElementById('snrCard');
+const snrDisplay    = document.getElementById('snrDisplay');
+const snrSegsEl     = document.getElementById('snrSegs');
+const noSignalBadge = document.getElementById('noSignalBadge');
+const rssiDisplay   = document.getElementById('rssiDisplay');
+const svcWrap       = document.getElementById('svcWrap');
+const svcCount      = document.getElementById('svcCount');
+const dlsCard       = document.getElementById('dlsCard');
+const dlsText       = document.getElementById('dlsText');
+const dlsLiveBadge  = document.getElementById('dlsLiveBadge');
+const slsArea       = document.getElementById('slsArea');
+const slsImage      = document.getElementById('slsImage');
+const ensembleDt    = document.getElementById('ensembleDatetime');
+// FM
+const fmFreqInput   = document.getElementById('fmFreqInput');
+const fmTuneBtn     = document.getElementById('fmTuneBtn');
+const fmPrevBtn     = document.getElementById('fmPrevBtn');
+const fmNextBtn     = document.getElementById('fmNextBtn');
+const fmPresetList  = document.getElementById('fmPresetList');
+const fmPsNameEl    = document.getElementById('fmPsName');
+const fmMetaEl      = document.getElementById('fmMeta');
+const stereoIndicator  = document.getElementById('stereoIndicator');
+const rdsIndicator     = document.getElementById('rdsIndicator');
+const fmSignalCard     = document.getElementById('fmSignalCard');
+const fmRssiDisplay    = document.getElementById('fmRssiDisplay');
+const fmRssiBarSegsEl  = document.getElementById('fmRssiBarSegs');
+const fmRssiMini       = document.getElementById('fmRssiMini');
+const fmRssiSegsEl     = document.getElementById('fmRssiSegs');
+const fmRssiVal        = document.getElementById('fmRssiVal');
+const rdsCard          = document.getElementById('rdsCard');
+const rdsLiveBadge     = document.getElementById('rdsLiveBadge');
+const rtCard           = document.getElementById('rtCard');
+const rtLiveBadge      = document.getElementById('rtLiveBadge');
+const rtText           = document.getElementById('rtText');
+const rdsPi            = document.getElementById('rdsPi');
+const rdsPty           = document.getElementById('rdsPty');
+const rdsTp            = document.getElementById('rdsTp');
+const rdsTa            = document.getElementById('rdsTa');
+// Banners
+const loadingBanner    = document.getElementById('loadingBanner');
+const errorBanner      = document.getElementById('errorBanner');
+const fmLoadingBanner  = document.getElementById('fmLoadingBanner');
+const fmErrorBanner    = document.getElementById('fmErrorBanner');
+// VU
+const vuCard           = document.getElementById('vuCard');
+const vuFill           = document.getElementById('vuFill');
+const vuPct            = document.getElementById('vuPct');
+const vuBadge          = document.getElementById('vuBadge');
+const vuCardFm         = document.getElementById('vuCardFm');
+const vuFillFm         = document.getElementById('vuFillFm');
+const vuPctFm          = document.getElementById('vuPctFm');
+const vuBadgeFm        = document.getElementById('vuBadgeFm');
+
+// ============================================================
+// Socket.IO
+// ============================================================
+const socket = io({ reconnection: true, reconnectionDelay: 2000, reconnectionAttempts: 10 });
+
+socket.on('connect',    () => { connDot.className = 'conn-dot connected';    connDot.title = 'Connecté'; hideError(); });
+socket.on('disconnect', () => { connDot.className = 'conn-dot';             connDot.title = 'Déconnecté'; });
+socket.on('reconnecting', n => { connDot.className = 'conn-dot reconnecting'; connDot.title = `Reconnexion… (${n})`; });
+socket.on('reconnect_failed', () => showError('Connexion perdue. Rechargez la page.'));
+
+socket.on('status', data => {
+  if (data.detail) {
+    const vol = data.detail.radioState?.volume;
+    if (vol !== undefined) setVolumeUI(vol);
+    const i2s = data.detail.radioState?.i2sEnabled;
+    if (i2s !== undefined) setI2sUI(i2s);
+  }
+  if (data.detail && !data.detail.radioCliExists) {
+    showError('radio_cli introuvable — lancez ugreen_install.sh');
+  }
+});
+
+// ============================================================
+// SNR bar — build segments
+// ============================================================
+for (let i = 0; i < SNR_SEGS; i++) {
+  const s = document.createElement('div');
+  s.className = 'snr-seg';
+  snrSegsEl.appendChild(s);
+}
+for (let i = 0; i < RSSI_FM_SEGS; i++) {
+  const s = document.createElement('div');
+  s.className = 'snr-seg';
+  fmRssiBarSegsEl.appendChild(s);
+}
+
+function updateSnrBar(snrDb) {
+  if (snrDb === null || snrDb === undefined || isNaN(parseFloat(snrDb))) {
+    snrDisplay.textContent = '—';
+    snrSegsEl.querySelectorAll('.snr-seg').forEach(s => s.className = 'snr-seg');
+    snrCard.style.display = 'none';
+    return;
+  }
+  const val = parseFloat(snrDb);
+  snrDisplay.textContent = val.toFixed(1);
+  snrCard.style.display = 'block';
+  noSignalBadge.classList.toggle('visible', val < SNR_NOSIG_THR);
+  const litCount = Math.round(Math.max(0, Math.min(1, val / SNR_MAX_DB)) * SNR_SEGS);
+  snrSegsEl.querySelectorAll('.snr-seg').forEach((s, i) => {
+    if (i < litCount) {
+      const p = i / SNR_SEGS;
+      s.className = 'snr-seg ' + (p < 0.30 ? 'lit-red' : p < 0.60 ? 'lit-orange' : 'lit-green');
+    } else s.className = 'snr-seg';
+  });
+}
+
+function updateFmRssiBar(rssi) {
+  if (rssi === null || isNaN(rssi)) {
+    fmRssiDisplay.textContent = '—';
+    fmSignalCard.style.display = 'none';
+    return;
+  }
+  fmRssiDisplay.textContent = rssi.toFixed(0);
+  fmSignalCard.style.display = 'block';
+  const range = RSSI_FM_MAX - RSSI_FM_MIN;
+  const litCount = Math.round(Math.max(0, Math.min(1, (rssi - RSSI_FM_MIN) / range)) * RSSI_FM_SEGS);
+  fmRssiBarSegsEl.querySelectorAll('.snr-seg').forEach((s, i) => {
+    if (i < litCount) {
+      const p = i / RSSI_FM_SEGS;
+      s.className = 'snr-seg ' + (p < 0.25 ? 'lit-red' : p < 0.55 ? 'lit-orange' : 'lit-blue');
+    } else s.className = 'snr-seg';
+  });
+  // mini bars channelbar
+  const miniSegs = fmRssiSegsEl.querySelectorAll('.fm-rssi-seg');
+  const miniLit  = Math.round(Math.max(0, Math.min(1, (rssi - RSSI_FM_MIN) / range)) * miniSegs.length);
+  miniSegs.forEach((s, i) => {
+    s.className = 'fm-rssi-seg' + (i < miniLit ? (i < 2 ? ' lit-red' : i < 4 ? ' lit-orange' : ' lit-blue') : '');
+  });
+  fmRssiVal.textContent = rssi.toFixed(0) + ' dBm';
+  fmRssiMini.style.display = 'flex';
+}
+
+// ============================================================
+// Mode switching
+// ============================================================
+function setMode(mode) {
+  if (appState.mode === mode) return;
+  appState.mode = mode;
+
+  document.getElementById('tabDab').classList.toggle('active', mode === 'dab');
+  document.getElementById('tabFm').classList.toggle('active', mode === 'fm');
+  document.getElementById('channelbarDab').style.display = mode === 'dab' ? 'flex' : 'none';
+  document.getElementById('channelbarFm').style.display  = mode === 'fm'  ? 'flex' : 'none';
+  document.getElementById('sidebarDab').style.display    = mode === 'dab' ? 'flex' : 'none';
+  document.getElementById('sidebarFm').style.display     = mode === 'fm'  ? 'flex' : 'none';
+  document.getElementById('mainDab').style.display       = mode === 'dab' ? 'flex' : 'none';
+  document.getElementById('mainFm').style.display        = mode === 'fm'  ? 'flex' : 'none';
+
+  if (mode === 'fm') {
+    showFmLoading('Démarrage firmware FM…');
+    socket.emit('bootFm');
+  }
+}
+
+// ============================================================
+// Volume UI
+// ============================================================
+function setVolumeUI(level) {
+  appState.volume = level;
+  volSlider.value = level;
+  volNum.textContent = level;
+}
+
+let volDebounce = null;
+volSlider.addEventListener('input', () => {
+  const v = parseInt(volSlider.value);
+  volNum.textContent = v;
+  clearTimeout(volDebounce);
+  volDebounce = setTimeout(() => socket.emit('setVolume', { level: v }), 200);
+});
+
+socket.on('volumeChanged', ({ level }) => setVolumeUI(level));
+
+// ============================================================
+// I²S toggle
+// ============================================================
+function setI2sUI(enabled) {
+  appState.i2sEnabled = enabled;
+  i2sBtn.classList.toggle('active', enabled);
+}
+
+i2sBtn.addEventListener('click', () => {
+  const newVal = !appState.i2sEnabled;
+  setI2sUI(newVal);
+  socket.emit('setI2s', { enable: newVal });
+});
+
+socket.on('i2sChanged', ({ enabled }) => {
+  setI2sUI(enabled);
+  if (appState.mode === 'dab') showLoading('I²S modifié — reboot au prochain scan');
+  else showFmLoading('I²S modifié — reboot au prochain accord');
+  setTimeout(() => { hideLoading(); hideFmLoading(); }, 3000);
+});
+
+// ============================================================
+// Banners
+// ============================================================
+function showLoading(msg)  { loadingBanner.textContent = msg; loadingBanner.classList.add('active'); }
+function hideLoading()     { loadingBanner.classList.remove('active'); }
+function showError(msg)    { errorBanner.textContent = msg; errorBanner.classList.add('active'); }
+function hideError()       { errorBanner.classList.remove('active'); }
+function showFmLoading(msg){ fmLoadingBanner.textContent = msg; fmLoadingBanner.classList.add('active'); }
+function hideFmLoading()   { fmLoadingBanner.classList.remove('active'); }
+function showFmError(msg)  { fmErrorBanner.textContent = msg; fmErrorBanner.classList.add('active'); }
+function hideFmError()     { fmErrorBanner.classList.remove('active'); }
+
+// ============================================================
+// Block list init (DAB)
+// ============================================================
+const BLOCKS = [
+  '5A','5B','5C','5D','6A','6B','6C','6D','7A','7B','7C','7D',
+  '8A','8B','8C','8D','9A','9B','9C','9D',
+  '10A','10N','10B','10C','10D',
+  '11A','11N','11B','11C','11D',
+  '12A','12N','12B','12C','12D',
+  '13A','13B','13C','13D','13E','13F'
+];
+const blockEls = {};
+
+BLOCKS.forEach(block => {
+  const li   = document.createElement('li');
+  li.dataset.block = block;
+  const ind  = document.createElement('span'); ind.className = 'indicator';
+  const name = document.createElement('span'); name.className = 'block-name'; name.textContent = block;
+  const mux  = document.createElement('span'); mux.className  = 'block-mux';
+  const snr  = document.createElement('span'); snr.className  = 'block-snr';
+  li.append(ind, name, mux, snr);
+  blockListEl.appendChild(li);
+  blockEls[block] = { li, ind, name, mux, snr };
+});
+
+function syncBlockSelect(block) {
+  const opt = blockSelect.querySelector(`option[value="${block}"]`);
+  if (opt) blockSelect.value = block;
+}
+
+// ============================================================
+// DAB — Scan
+// ============================================================
+scanBtn.addEventListener('click', () => {
+  const sel = blockSelect.value;
+  if (sel !== 'all') {
+    // Scan d'un seul bloc
+    const el = blockEls[sel];
+    if (!el) return;
+    Object.values(blockEls).forEach(e => e.li.classList.remove('selected'));
+    el.li.classList.add('selected');
+    appState.currentBlock = sel;
+    muxNameEl.textContent = sel;
+    svcWrap.innerHTML = '<div class="empty-state">Chargement…</div>';
+    svcCount.style.display = 'none';
+    dlsCard.style.display = 'none';
+    snrCard.style.display = 'none';
+    hideError();
+    el.ind.className = 'indicator scanning';
+    showLoading(`Syntonisation sur ${sel}…`);
+    socket.emit('scanBlock', sel);
+    return;
+  }
+  // Scan complet
+  if (appState.isDabScanning) return;
+  appState.isDabScanning = true;
+  scanBtn.disabled = true;
+  scanBtn.textContent = '⏳ Scan…';
+  Object.values(blockEls).forEach(e => {
+    e.ind.className = 'indicator';
+    e.snr.textContent = '';
+    e.mux.textContent = '';
+    e.name.textContent = e.li.dataset.block;
+    e.li.classList.remove('selected');
+  });
+  muxNameEl.textContent = 'Scan en cours…';
+  svcWrap.innerHTML = '<div class="empty-state">Scan en cours…</div>';
+  svcCount.style.display = 'none';
+  dlsCard.style.display = 'none';
+  snrCard.style.display = 'none';
+  appState.currentBlock = null;
+  showLoading('Scan de toutes les fréquences DAB…');
+  hideError();
+  socket.emit('scanAllBlocks');
+});
+
+socket.on('blockResult', ({ block, result, error }) => {
+  const el = blockEls[block];
+  if (!el) return;
+  if (error || !result) {
+    el.ind.className = 'indicator';
+    el.snr.textContent = '';
+    el.mux.textContent = '';
+  } else {
+    el.ind.className = 'indicator green';
+    el.snr.textContent = result.snr !== undefined ? parseFloat(result.snr).toFixed(1) + ' dB' : '';
+    el.mux.textContent = result.mux || '';
+  }
+  // Fin scan complet
+  if (appState.isDabScanning && block === BLOCKS[BLOCKS.length - 1]) {
+    appState.isDabScanning = false;
+    scanBtn.disabled = false;
+    scanBtn.textContent = '⦿ Scan';
+    muxNameEl.textContent = 'Sélectionnez un bloc';
+    svcWrap.innerHTML = '<div class="empty-state">Sélectionnez un bloc pour voir les services</div>';
+    hideLoading();
+  }
+  // Fin scan bloc unique (pendingBlock)
+  if (appState._pendingBlock === block) {
+    appState._pendingBlock = null;
+    if (error) {
+      showError(`${block} : ${error}`);
+      hideLoading();
+      if (blockEls[block]) {
+        const hasSnr = blockEls[block].snr.textContent !== '';
+        blockEls[block].ind.className = 'indicator' + (hasSnr ? ' green' : '');
       }
-
-      function hideLoading() {
-        loadingIndicator.classList.remove('active');
+    } else {
+      if (result) {
+        muxNameEl.textContent = result.mux || block;
+        updateSnrBar(result.snr);
+        if (result.rssi !== null && result.rssi !== undefined) {
+          rssiDisplay.textContent = result.rssi.toFixed(0) + ' dBm';
+          rssiDisplay.style.display = '';
+        }
       }
+      socket.emit('listServices');
+    }
+  }
+});
 
-      function showError(message) {
-        errorMessage.textContent = '❌ ' + message;
-        errorMessage.classList.add('active');
-      }
+// ============================================================
+// DAB — Block click
+// ============================================================
+blockListEl.addEventListener('click', e => {
+  const li = e.target.closest('li');
+  if (!li || appState.isDabScanning) return;
+  const block = li.dataset.block;
+  if (!block) return;
+  Object.values(blockEls).forEach(e => e.li.classList.remove('selected'));
+  li.classList.add('selected');
+  appState.currentBlock = block;
+  syncBlockSelect(block);
+  muxNameEl.textContent = block;
+  svcWrap.innerHTML = '<div class="empty-state">Chargement…</div>';
+  svcCount.style.display = 'none';
+  dlsCard.style.display = 'none';
+  hideError();
+  blockEls[block].ind.className = 'indicator scanning';
+  appState._pendingBlock = block;
+  showLoading(`Syntonisation sur ${block}…`);
+  socket.emit('scanBlock', block);
+});
 
-      function hideError() {
-        errorMessage.classList.remove('active');
-      }
+// Scan bouton avec pendingBlock
+scanBtn.addEventListener('click', () => {}, { capture: true }); // already handled above
+// (on réutilise le même listener, pas de doublon)
 
-      /**
-       * Safely format SNR value
-       */
-      function formatSnr(snr) {
-        if (snr === null || snr === undefined) return '';
-        const num = parseFloat(snr);
-        if (isNaN(num)) return '';
-        return `${num.toFixed(1)} dB`;
-      }
+// Patch: définir _pendingBlock lors du scan bloc depuis le select
+const origScanClick = scanBtn.onclick;
+document.getElementById('scanBtn').addEventListener('click', () => {
+  const sel = blockSelect.value;
+  if (sel !== 'all') appState._pendingBlock = sel;
+}, true);
 
-      /**
-       * Safely get service ID from service object
-       */
-      function getServiceId(service) {
-        if (!service) return null;
-        // Try various possible property names
-        return service.id || service.service_id || service.serviceId || service.sid || null;
-      }
+// ============================================================
+// DAB — Services
+// ============================================================
+socket.on('services', list => {
+  hideLoading();
+  if (appState.currentBlock && blockEls[appState.currentBlock]) {
+    const el = blockEls[appState.currentBlock];
+    const hasSnr = el.snr.textContent !== '';
+    el.ind.className = 'indicator' + (hasSnr ? ' green' : '');
+  }
+  if (!Array.isArray(list) || list.length === 0) {
+    svcWrap.innerHTML = '<div class="empty-state">Aucun service sur ce bloc</div>';
+    svcCount.style.display = 'none';
+    return;
+  }
+  svcCount.textContent = list.length + ' service' + (list.length > 1 ? 's' : '');
+  svcCount.style.display = 'inline-flex';
 
-      /**
-       * Safely get service label from service object
-       */
-      function getServiceLabel(service) {
-        if (!service) return 'Unknown';
-        return service.label || service.name || service.service_name || service.serviceName || 
-               getServiceId(service) || 'Unknown';
-      }
+  const table = document.createElement('table');
+  table.className = 'svc-table';
+  table.innerHTML = `<thead><tr><th>Label</th><th>SID</th></tr></thead>`;
+  const tbody = document.createElement('tbody');
+  list.forEach(svc => {
+    const tr = document.createElement('tr');
+    tr.dataset.id          = svc.id || '';
+    tr.dataset.componentId = svc.componentId || '0';
+    tr.innerHTML = `<td class="lbl">${svc.label || '—'}</td><td class="sid">${svc.id || '—'}</td>`;
+    if (!svc.id) tr.style.opacity = '0.4';
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  svcWrap.innerHTML = '';
+  svcWrap.appendChild(table);
+});
 
-      // =====================
-      // Theme Management
-      // =====================
-      (function initTheme() {
-        const savedTheme = localStorage.getItem('dab-theme');
-        if (savedTheme === 'dark') {
-          themeSelector.value = 'dark';
-          document.documentElement.classList.add('dark-theme');
-        }
-      })();
+svcWrap.addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr || !tr.dataset.id) return;
+  svcWrap.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
+  tr.classList.add('selected');
+  dlsCard.style.display = 'none';
+  hideError();
+  showLoading('Sélection du service…');
+  appState._pendingService = tr.dataset.id;
+  socket.emit('selectService', { serviceId: tr.dataset.id, componentId: tr.dataset.componentId || '0' });
+});
 
-      themeSelector.addEventListener('change', () => {
-        const value = themeSelector.value;
-        if (value === 'dark') {
-          document.documentElement.classList.add('dark-theme');
-          localStorage.setItem('dab-theme', 'dark');
-        } else {
-          document.documentElement.classList.remove('dark-theme');
-          localStorage.setItem('dab-theme', 'default');
-        }
-      });
+socket.on('serviceSelected', ({ success, error }) => {
+  if (!success) { hideLoading(); showError(error || 'Échec sélection'); return; }
+  appState.hasService = true;
+  dlsCard.style.display = 'block';
+  dlsLiveBadge.style.display = 'inline-flex';
+  dlsText.textContent = '…';
+  dlsText.className = 'dls-text';
+  hideLoading();
+});
 
-      // =====================
-      // Block List Initialization
-      // =====================
-      // European DAB Band III blocks with correct indices
-      // Note: 10N, 11N, 12N are intermediate frequencies
-      const blocks = [
-        '5A','5B','5C','5D',
-        '6A','6B','6C','6D',
-        '7A','7B','7C','7D',
-        '8A','8B','8C','8D',
-        '9A','9B','9C','9D',
-        '10A','10N','10B','10C','10D',
-        '11A','11N','11B','11C','11D',
-        '12A','12N','12B','12C','12D',
-        '13A','13B','13C','13D','13E','13F'
-      ];
+// ============================================================
+// DAB — DLS live polling
+// ============================================================
+socket.on('dlsUpdate', ({ text }) => {
+  if (!text) return;
+  dlsCard.style.display = 'block';
+  dlsLiveBadge.style.display = 'inline-flex';
+  dlsText.textContent = text;
+  dlsText.className = 'dls-text';
+});
 
-      const blockElements = {};
+socket.on('ensembleDatetime', ({ datetime }) => {
+  if (!datetime) return;
+  ensembleDt.textContent = datetime;
+  ensembleDt.style.display = '';
+});
 
-      blocks.forEach(block => {
-        const li = document.createElement('li');
-        li.dataset.block = block;
+// ============================================================
+// DAB — Digrad
+// ============================================================
+diagBtn.addEventListener('click', () => socket.emit('getDigradStatus'));
+socket.on('diagStatus', data => {
+  const info = JSON.stringify(data, null, 2).replace(/[{}",]/g, m => m === '"' ? '' : m);
+  alert('Statut radio numérique :\n\n' + info);
+});
 
-        const indicator = document.createElement('span');
-        indicator.className = 'indicator gray';
-        li.appendChild(indicator);
+// ============================================================
+// FM — Boot ready
+// ============================================================
+socket.on('fmReady', ({ volume, i2sEnabled }) => {
+  hideFmLoading();
+  setVolumeUI(volume);
+  setI2sUI(i2sEnabled);
+  fmPsNameEl.textContent = '—';
+  fmMetaEl.style.display = 'none';
+  rdsCard.style.display = 'none';
+  rtCard.style.display = 'none';
+  fmSignalCard.style.display = 'none';
+  fmRssiMini.style.display = 'none';
+});
 
-        const label = document.createElement('span');
-        label.className = 'block-label';
-        label.textContent = block;
-        li.appendChild(label);
+// ============================================================
+// FM — Tune
+// ============================================================
+function tuneFm(freqMhz) {
+  const freq = parseFloat(freqMhz);
+  if (isNaN(freq) || freq < 87.5 || freq > 108.0) {
+    showFmError('Fréquence FM invalide (87.5–108.0 MHz)');
+    return;
+  }
+  appState.fmFreqMhz = freq;
+  fmFreqInput.value  = freq.toFixed(1);
+  hideFmError();
+  showFmLoading(`Syntonisation sur ${freq.toFixed(1)} MHz…`);
+  fmPsNameEl.textContent = '—';
+  fmMetaEl.style.display = 'none';
+  rdsCard.style.display  = 'none';
+  rtCard.style.display   = 'none';
+  socket.emit('tuneFm', { freqKhz: Math.round(freq * 1000) });
+}
 
-        const snrSpan = document.createElement('span');
-        snrSpan.className = 'block-snr';
-        snrSpan.textContent = '';
-        li.appendChild(snrSpan);
+fmTuneBtn.addEventListener('click', () => tuneFm(fmFreqInput.value));
+fmFreqInput.addEventListener('keydown', e => { if (e.key === 'Enter') tuneFm(fmFreqInput.value); });
 
-        blockListEl.appendChild(li);
-        blockElements[block] = { li, indicator, label, snrSpan };
-      });
+fmPrevBtn.addEventListener('click', () => {
+  hideFmError();
+  showFmLoading('Station précédente…');
+  socket.emit('fmPrev');
+});
+fmNextBtn.addEventListener('click', () => {
+  hideFmError();
+  showFmLoading('Station suivante…');
+  socket.emit('fmNext');
+});
 
-      // =====================
-      // Scan All Blocks
-      // =====================
-      scanBtn.addEventListener('click', () => {
-        if (isScanning) return;
+// Stepper (+/- 0.1 MHz)
+fmFreqInput.addEventListener('keydown', e => {
+  if (e.key === 'ArrowUp')   { e.preventDefault(); fmFreqInput.value = (parseFloat(fmFreqInput.value) + FM_STEP).toFixed(1); }
+  if (e.key === 'ArrowDown') { e.preventDefault(); fmFreqInput.value = (parseFloat(fmFreqInput.value) - FM_STEP).toFixed(1); }
+});
 
-        isScanning = true;
-        scanBtn.disabled = true;
-        scanBtn.textContent = '⏳ Scan en cours...';
+socket.on('fmTuned', ({ freqKhz, freqMhz }) => {
+  hideFmLoading();
+  appState.isFmTuned  = true;
+  appState.fmFreqMhz  = freqMhz;
+  fmFreqInput.value   = freqMhz.toFixed ? freqMhz.toFixed(1) : freqMhz;
+  saveFmPreset(parseFloat(fmFreqInput.value));
+  fmMetaEl.style.display = 'flex';
+});
 
-        // Reset all indicators
-        Object.values(blockElements).forEach(el => {
-          el.indicator.className = 'indicator gray';
-          el.snrSpan.textContent = '';
-          el.label.textContent = el.li.dataset.block;
-          el.li.classList.remove('selected');
-        });
+socket.on('fmSignal', ({ rssi }) => {
+  if (rssi !== null && rssi !== undefined) updateFmRssiBar(rssi);
+});
 
-        muxNameEl.textContent = 'Scan en cours…';
-        servicesEl.innerHTML = '';
-        metadataEl.style.display = 'none';
-        currentBlock = null;
+// ============================================================
+// FM — RDS live polling
+// ============================================================
+socket.on('rdsUpdate', data => {
+  appState.rdsActive = true;
 
-        showLoading('Scan de toutes les fréquences DAB…');
-        hideError();
+  // PS name
+  if (data.ps) {
+    fmPsNameEl.textContent = data.ps.trim();
+    rdsIndicator.style.display = 'inline-flex';
+  }
 
-        socket.emit('scanAllBlocks');
-      });
+  // Stéréo
+  stereoIndicator.style.display = data.stereo ? 'inline-flex' : 'none';
 
-      // =====================
-      // Block Result Handler
-      // =====================
-      socket.on('blockResult', ({ block, result, error }) => {
-        const el = blockElements[block];
-        if (!el) return;
+  // RSSI
+  if (data.rssi !== null && data.rssi !== undefined) updateFmRssiBar(data.rssi);
 
-        // Update indicator based on result
-        if (error || !result) {
-          el.indicator.className = 'indicator gray';
-          el.snrSpan.textContent = '';
-        } else {
-          el.indicator.className = 'indicator green';
-          el.snrSpan.textContent = formatSnr(result.snr);
+  // RDS grid
+  if (data.pi || data.pty !== undefined || data.tp !== undefined) {
+    rdsCard.style.display  = 'block';
+    rdsLiveBadge.style.display = 'inline-flex';
+    rdsPi.textContent  = data.pi  ? '0x' + parseInt(data.pi).toString(16).toUpperCase().padStart(4,'0') : '—';
+    rdsPty.textContent = data.pty !== undefined ? `${data.pty} — ${PTY_NAMES[data.pty] || '?'}` : '—';
+    rdsTp.textContent  = data.tp !== undefined ? (data.tp ? '✓' : '✗') : '—';
+    rdsTa.textContent  = data.ta !== undefined ? (data.ta ? '✓ (Annonce trafic)' : '✗') : '—';
+  }
 
-          // Update label with mux name if available
-          if (result.mux) {
-            el.label.textContent = `${block} — ${result.mux}`;
-          }
-        }
+  // Radiotext
+  if (data.radiotext) {
+    rtCard.style.display       = 'block';
+    rtLiveBadge.style.display  = 'inline-flex';
+    rtText.textContent         = data.radiotext;
+  }
+});
 
-        // Check if this is the last block of a full scan
-        if (isScanning && block === blocks[blocks.length - 1]) {
-          isScanning = false;
-          scanBtn.disabled = false;
-          scanBtn.textContent = '🔍 Lancer le scan';
-          muxNameEl.textContent = 'Sélectionnez un bloc pour voir les services';
-          hideLoading();
-        }
+// ============================================================
+// FM — Presets (localStorage)
+// ============================================================
+function saveFmPreset(freqMhz) {
+  let presets = JSON.parse(localStorage.getItem('dabboard-fm-presets') || '[]');
+  presets = presets.filter(f => f !== freqMhz);
+  presets.unshift(freqMhz);
+  presets = presets.slice(0, 12);
+  localStorage.setItem('dabboard-fm-presets', JSON.stringify(presets));
+  renderFmPresets();
+}
 
-        // Handle pending single block scan
-        if (pendingBlock && block === pendingBlock) {
-          pendingBlock = null;
+function renderFmPresets() {
+  const presets = JSON.parse(localStorage.getItem('dabboard-fm-presets') || '[]');
+  if (!presets.length) {
+    fmPresetList.innerHTML = '<li style="padding:20px 12px; color:var(--text-dim); font-size:11px;">Aucune fréquence récente</li>';
+    return;
+  }
+  fmPresetList.innerHTML = '';
+  presets.forEach(freq => {
+    const li = document.createElement('li');
+    li.dataset.freq = freq;
+    const ind  = document.createElement('span'); ind.className = 'indicator blue';
+    const name = document.createElement('span'); name.className = 'block-name'; name.textContent = freq.toFixed(1);
+    const unit = document.createElement('span'); unit.className = 'block-mux'; unit.textContent = 'MHz';
+    li.append(ind, name, unit);
+    if (appState.fmFreqMhz === freq) li.classList.add('selected');
+    li.addEventListener('click', () => tuneFm(freq));
+    fmPresetList.appendChild(li);
+  });
+}
 
-          if (error) {
-            muxNameEl.textContent = `Erreur sur ${block}: ${error}`;
-            hideLoading();
-          } else {
-            // Request service list now that tuning is complete
-            socket.emit('listServices');
-          }
-        }
-      });
+// Init presets on load
+renderFmPresets();
 
-      // =====================
-      // Block Selection (Click)
-      // =====================
-      blockListEl.addEventListener('click', (event) => {
-        const li = event.target.closest('li');
-        if (!li || isScanning) return;
+// ============================================================
+// Audio monitoring (VU meter)
+// ============================================================
+audioToggle.addEventListener('click', () => {
+  if (!appState.audioActive) {
+    socket.emit('startAudioMonitor');
+    const card = appState.mode === 'fm' ? vuCardFm : vuCard;
+    card.style.display = 'block';
+    audioToggle.textContent = 'Couper';
+    appState.audioActive = true;
+  } else {
+    socket.emit('stopAudioMonitor');
+    vuCard.style.display   = 'none';
+    vuCardFm.style.display = 'none';
+    vuFill.style.width   = '0%';
+    vuFillFm.style.width = '0%';
+    vuPct.textContent    = '0%';
+    vuPctFm.textContent  = '0%';
+    vuBadge.textContent  = '0%';
+    vuBadgeFm.textContent = '0%';
+    audioToggle.textContent = 'Audio';
+    appState.audioActive = false;
+  }
+});
 
-        const block = li.dataset.block;
-        if (!block) return;
+socket.on('audioLevel', level => {
+  const safe = Math.max(0, Math.min(1, parseFloat(level) || 0));
+  const pct  = Math.round(safe * 100) + '%';
+  vuFill.style.width    = pct;
+  vuFillFm.style.width  = pct;
+  vuPct.textContent     = pct;
+  vuPctFm.textContent   = pct;
+  vuBadge.textContent   = pct;
+  vuBadgeFm.textContent = pct;
+});
 
-        // Highlight selected row
-        Object.values(blockElements).forEach(el => el.li.classList.remove('selected'));
-        li.classList.add('selected');
-        currentBlock = block;
+// ============================================================
+// Logs
+// ============================================================
+logBtn.addEventListener('click', () => {
+  logModal.classList.add('active');
+  logContent.textContent = 'Chargement…';
+  socket.emit('getLogs');
+});
+closeLogBtn.addEventListener('click', () => logModal.classList.remove('active'));
+logModal.addEventListener('click', e => { if (e.target === logModal) logModal.classList.remove('active'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') logModal.classList.remove('active'); });
+socket.on('logs', logs => { logContent.textContent = logs || '(Aucun log)'; });
 
-        // Clear previous state
-        muxNameEl.textContent = `Chargement des services pour ${block}…`;
-        servicesEl.innerHTML = '';
-        metadataEl.style.display = 'none';
-        hideError();
-
-        // Show scanning indicator on this block
-        blockElements[block].indicator.className = 'indicator scanning';
-
-        // Set pending and request scan
-        pendingBlock = block;
-        showLoading(`Syntonisation sur ${block}…`);
-        socket.emit('scanBlock', block);
-      });
-
-      // =====================
-      // Services List Handler
-      // =====================
-      socket.on('services', (list) => {
-        servicesEl.innerHTML = '';
-        hideLoading();
-
-        // Restore indicator state
-        if (currentBlock && blockElements[currentBlock]) {
-          const el = blockElements[currentBlock];
-          // Check if this block has signal (green) or not
-          const hasSignal = el.snrSpan.textContent !== '';
-          el.indicator.className = hasSignal ? 'indicator green' : 'indicator gray';
-        }
-
-        if (!Array.isArray(list) || list.length === 0) {
-          muxNameEl.textContent = 'Aucun service disponible sur ce bloc.';
-          return;
-        }
-
-        muxNameEl.textContent = `${list.length} service(s) disponible(s) — sélectionnez une station :`;
-
-        list.forEach(service => {
-          const li = document.createElement('li');
-          const serviceId = getServiceId(service);
-          const serviceLabel = getServiceLabel(service);
-
-          li.textContent = serviceLabel;
-          li.dataset.id = serviceId || '';
-          li.dataset.componentId = service.componentId || service.component_id || '0';
-
-          if (!serviceId) {
-            li.style.color = '#999';
-            li.title = 'ID de service manquant';
-          }
-
-          servicesEl.appendChild(li);
-        });
-      });
-
-      // =====================
-      // Service Selection
-      // =====================
-      servicesEl.addEventListener('click', (event) => {
-        const li = event.target.closest('li');
-        if (!li) return;
-
-        const serviceId = li.dataset.id;
-        if (!serviceId) {
-          showError('Ce service n\'a pas d\'identifiant valide.');
-          return;
-        }
-
-        // Highlight selected service
-        Array.from(servicesEl.children).forEach(row => row.classList.remove('selected'));
-        li.classList.add('selected');
-
-        metadataEl.style.display = 'none';
-        hideError();
-
-        // Request service selection
-        pendingService = serviceId;
-        showLoading('Sélection du service…');
-
-        socket.emit('selectService', {
-          serviceId: serviceId,
-          componentId: li.dataset.componentId || '0'
-        });
-      });
-
-      // =====================
-      // Service Selected Handler
-      // =====================
-      socket.on('serviceSelected', ({ success, error }) => {
-        if (!pendingService) return;
-
-        const currentService = pendingService;
-        pendingService = null;
-
-        if (!success) {
-          hideLoading();
-          showError(`Échec de sélection: ${error || 'Erreur inconnue'}`);
-          return;
-        }
-
-        // Request metadata
-        showLoading('Chargement des métadonnées…');
-        socket.emit('getMetadata');
-      });
-
-      // =====================
-      // Metadata Handler
-      // =====================
-      socket.on('metadata', (data) => {
-        hideLoading();
-
-        if (data.error) {
-          showError(`Métadonnées: ${data.error}`);
-          return;
-        }
-
-        metadataEl.style.display = 'block';
-        dlsEl.textContent = data.dls || '(aucun texte)';
-        dlPlusEl.textContent = data.dlPlus || '(non disponible)';
-
-        if (data.sls && data.sls.length > 0) {
-          slsImageEl.src = `data:image/png;base64,${data.sls}`;
-          slsImageEl.style.display = 'block';
-        } else {
-          slsImageEl.style.display = 'none';
-        }
-      });
-
-      // =====================
-      // Log Modal
-      // =====================
-      logBtn.addEventListener('click', () => {
-        logModal.classList.add('active');
-        logContent.textContent = 'Chargement…';
-        socket.emit('getLogs');
-      });
-
-      closeLogBtn.addEventListener('click', () => {
-        logModal.classList.remove('active');
-      });
-
-      // Close modal on backdrop click
-      logModal.addEventListener('click', (e) => {
-        if (e.target === logModal) {
-          logModal.classList.remove('active');
-        }
-      });
-
-      // Close modal on Escape key
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && logModal.classList.contains('active')) {
-          logModal.classList.remove('active');
-        }
-      });
-
-      socket.on('logs', (logs) => {
-        logContent.textContent = logs || '(Aucun log)';
-      });
-
-      // =====================
-      // Audio Monitoring
-      // =====================
-      audioToggle.addEventListener('click', () => {
-        if (!audioActive) {
-          socket.emit('startAudioMonitor');
-          vuContainer.classList.add('active');
-          audioToggle.textContent = '🔇 Masquer le vumètre';
-          audioActive = true;
-        } else {
-          socket.emit('stopAudioMonitor');
-          vuContainer.classList.remove('active');
-          vuBar.style.width = '0%';
-          vuValue.textContent = '0%';
-          audioToggle.textContent = '🎵 Afficher le vumètre';
-          audioActive = false;
-        }
-      });
-
-      socket.on('audioLevel', (level) => {
-        // Ensure level is a valid number between 0 and 1
-        const safeLevel = Math.max(0, Math.min(1, parseFloat(level) || 0));
-        const pct = Math.round(safeLevel * 100);
-        vuBar.style.width = pct + '%';
-        vuValue.textContent = pct + '%';
-      });
-
-      // =====================
-      // Error Handler
-      // =====================
-      socket.on('error', (data) => {
-        hideLoading();
-        showError(data.message || 'Une erreur est survenue');
-        console.error('Server error:', data);
-      });
-
-      // =====================
-      // Status Handler
-      // =====================
-      socket.on('status', (data) => {
-        console.log('Server status:', data);
-        if (data.detail && !data.detail.radioCliExists) {
-          showError('radio_cli non trouvé sur le serveur. Exécutez ugreen_install.sh.');
-        }
-      });
-    </script>
-  </body>
+// ============================================================
+// Error handler
+// ============================================================
+socket.on('error', data => {
+  hideLoading(); hideFmLoading();
+  if (appState.mode === 'fm') showFmError(data.message || 'Erreur serveur');
+  else showError(data.message || 'Erreur serveur');
+});
+</script>
+</body>
 </html>

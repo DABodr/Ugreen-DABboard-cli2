@@ -1,0 +1,73 @@
+sudo /usr/local/sbin/radio_cli --help
+Usage: radio_cli [OPTION...]
+            Commands and options can be combined. The command: 'sudo
+            ./radio_cli -b D -c 12 -e 17333 -f 33 -g -p -l 50' for example will
+            boot up with DAB firmware, tune to the frequency with index 33 and
+            the service with id 17333 and component id 12, start playing, print
+            the service list and adjust the volume to a level of 50.
+radio_cli - simple DAB radio interface to the Si468x for the terminal
+
+  -b, --boot=FIRMWARE        Load the firmware and boot the Si468x. Use
+                             argument 'D' to load the DAB firmware, 'F' to load
+                             the FMHD firmware.
+  -c, --component=SERVICE    Component id
+  -d, --digrad_status        Prints the digital radio status. Prints the FMHD
+                             status if in FMHD mode.
+  -D, --station_text         Prints the station's text (e.g. songname) when in
+                             DAB mode. Prints the radio text when in FM mode
+                             (if available in RDS). Also prints further RDS
+                             information when acquired and in FM mode. Use the
+                             WAITTIME option to wait longer for a valid text.
+  -e, --service=SERVICE      Service id
+  -f, --frequency=FREQUENCY  Frequency index of the ensemble
+  -F, --fm_frequency=FREQUENCY   Tune to a FM frequency in kHz
+  -g, --digital_service_list Prints the digital service list of the ensemble,
+                             including service data, only as json (combine with
+                             -j). Prints the service list in iBiquity format
+                             for FMHD.
+  -G, --ensemble_info        Prints ensemble information (label)
+  -i, --chip_info            Prints Si468x information
+  -j, --format_json          Output info as json, if implemented. Use plain
+                             output format for datastreams.
+  -k, --shutdown             Shut down the Si468x
+  -l, --level=LEVEL          Set the volume level of the radio to a value
+                             between 0 (low) and 63 (high)
+  -n, --event_status         Prints the digital radio event status. Prints the
+                             FMHD event status if in FMHD mode.
+  -o, --i2s_out=ENABLE       Enable (i2s_out=1) i2s as output - analog out will
+                             be deactivated. To disable, use i2s_out=0. The
+                             board must support his and custom kernel needed.
+                             The Si468x must not be tuned to change this.
+  -p, --play                 Play a station. Service and component have to be
+                             given and the Si468x has to be tuned to the right
+                             frequency already. Works also for FMHD (try
+                             setting the service ID to 0 and component ID = 0
+                             for MPS, 1 for SPS1, ...) if no other values are
+                             known.
+  -r, --rds_status           Print RDS status information
+  -R, --rds=REGION           Enable RDS. Set the region -R U for US, -R E for
+                             Europe. Use when powered up only.
+  -t, --datetime             Prints ensemble date-time as ISO string
+  -u, --full_scan            Scan all (European by default) DAB frequencies for
+                             ensembles and save to the file "full_scan.json" in
+                             json format. Command can be used with the json
+                             output flag -j, but it will not print anything
+                             until the scan is finished.
+  -x, --next                 Tune to the next FMHD station
+  -X, --previous             Tune to the previous FMHD station
+  -y, --frequency_list=FILE  Get a frequency list from file. Give the file name
+                             of the frequency list to use. The file must be an
+                             ASCII encoded list of frequencies separated by
+                             newlines. The list will be reset after a reboot of
+                             the Si468x.
+  -z, --waittime=WAITTIME    Certain commands (like RDS radio text) use a
+                             timeout waiting for valid data. Wait for WAITTIME
+                             seconds. Default is 1s.
+  -?, --help                 Give this help list
+      --usage                Give a short usage message
+  -V, --version              Print program version
+
+Mandatory or optional arguments to long options are also mandatory or optional
+for any corresponding short options.
+
+Report bugs to <info@ugreen.eu>.
